@@ -16,7 +16,15 @@ import numpy as np
 import polars as pl
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 
-from simple_densities import COS, ENT, EPS, PATTERNS, SimpleDensities, load_labeled, logit
+from simple_densities import (
+    COS,
+    ENT,
+    EPS,
+    PATTERNS,
+    SimpleDensities,
+    load_labeled,
+    logit,
+)
 
 # Two series -- identity, so categorical slots 1 and 2. Diverging blue<->red with a
 # neutral grey midpoint for the log-ratio, whose zero means "no evidence either way".
@@ -54,9 +62,7 @@ def fitted_marginal(model: SimpleDensities, cls: int, which: int, n: int = 400):
     mass at score == 0 alongside the continuous part -- they are different kinds of
     number and the plot keeps them apart.
     """
-    atom = sum(
-        np.exp(model.log_pi[p, cls]) for p in PATTERNS if not PATTERNS[p][which]
-    )
+    atom = sum(np.exp(model.log_pi[p, cls]) for p in PATTERNS if not PATTERNS[p][which])
     s = np.linspace(EPS, 1 - EPS, n)
     dens = np.zeros(n)
     for p in PATTERNS:
@@ -66,7 +72,9 @@ def fitted_marginal(model: SimpleDensities, cls: int, which: int, n: int = 400):
         # Position of this score among the pattern's live coordinates.
         axis = sum(PATTERNS[p][:which]) if which else 0
         c, f = d.marginal(axis)
-        dens += np.exp(model.log_pi[p, cls]) * np.interp(logit(s), c, f, left=0, right=0)
+        dens += np.exp(model.log_pi[p, cls]) * np.interp(
+            logit(s), c, f, left=0, right=0
+        )
     return s, dens / (s * (1 - s)), atom
 
 
@@ -102,22 +110,41 @@ def figure(method: str = "kde", path: str = "densities_fit.png") -> str:
         ):
             ax = axes[r, k]
             top = 0.0
-            for cls, colour, name in ((0, INCORRECT, "incorrect"), (1, CORRECT, "correct")):
+            for cls, colour, name in (
+                (0, INCORRECT, "incorrect"),
+                (1, CORRECT, "correct"),
+            ):
                 obs = tr.filter(pl.col("is_correct") == cls)[col].to_numpy()
                 live = obs[obs > 0]
-                top = max(top, np.histogram(live, bins=60, range=(0, 1), density=True)[0].max())
+                top = max(
+                    top,
+                    np.histogram(live, bins=60, range=(0, 1), density=True)[0].max(),
+                )
                 # Empirical histogram scaled to the same footing as the fitted curve:
                 # it integrates to P(score > 0), not to 1.
                 ax.hist(
-                    live, bins=60, range=(0, 1), density=True, weights=None,
-                    histtype="stepfilled", color=colour, alpha=0.16,
-                    edgecolor="none", zorder=1,
+                    live,
+                    bins=60,
+                    range=(0, 1),
+                    density=True,
+                    weights=None,
+                    histtype="stepfilled",
+                    color=colour,
+                    alpha=0.16,
+                    edgecolor="none",
+                    zorder=1,
                 )
                 s, f, atom = fitted_marginal(model, cls, k)
                 # hist(density=True) normalises over the plotted subset, so rescale the
                 # fitted curve by the same factor to make the two directly comparable.
-                ax.plot(s, f / max(1 - atom, 1e-9), color=colour, lw=2, zorder=3,
-                        label=f"{name}  (P(=0) = {atom:.3f})")
+                ax.plot(
+                    s,
+                    f / max(1 - atom, 1e-9),
+                    color=colour,
+                    lw=2,
+                    zorder=3,
+                    label=f"{name}  (P(=0) = {atom:.3f})",
+                )
             ax.set_xlim(0, 1)
             # The change of variables from logit to score units carries a 1/(s(1-s))
             # Jacobian, so the fitted curve diverges as s -> 0. Frame on the histogram.
@@ -128,20 +155,37 @@ def figure(method: str = "kde", path: str = "densities_fit.png") -> str:
             ax.set_axisbelow(True)
             ax.legend(frameon=False, fontsize=8, labelcolor=INK2, loc="upper right")
             if k == 0:
-                ax.text(-0.16, 1.06, inst, transform=ax.transAxes, fontsize=11,
-                        weight="bold", color=INK)
+                ax.text(
+                    -0.16,
+                    1.06,
+                    inst,
+                    transform=ax.transAxes,
+                    fontsize=11,
+                    weight="bold",
+                    color=INK,
+                )
 
         ax = axes[r, 2]
         s, lr = lr_surface(model, mz_med)
         lim = float(np.percentile(np.abs(lr.compressed()), 99))
-        im = ax.pcolormesh(s, s, lr.T, cmap=DIVERGING, shading="auto",
-                           norm=TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim))
+        im = ax.pcolormesh(
+            s,
+            s,
+            lr.T,
+            cmap=DIVERGING,
+            shading="auto",
+            norm=TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim),
+        )
         ax.contour(s, s, lr.T, levels=[0.0], colors=[INK2], linewidths=1.2)
         ax.set_facecolor(GRID)
         ax.set_xlabel("entropy_similarity")
         ax.set_ylabel("ModifiedCosineGreedy")
-        ax.set_title(f"log₁₀ LR   at m/z {mz_med:.0f}   (grey = no data)",
-                     fontsize=9, color=INK2, pad=6)
+        ax.set_title(
+            f"log₁₀ LR   at m/z {mz_med:.0f}   (grey = no data)",
+            fontsize=9,
+            color=INK2,
+            pad=6,
+        )
         cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
         cb.outline.set_visible(False)
         cb.ax.tick_params(color=MUTED, labelcolor=MUTED)
@@ -150,7 +194,9 @@ def figure(method: str = "kde", path: str = "densities_fit.png") -> str:
         f"P(score | correct) vs P(score | incorrect) — {method.upper()} fit, train fold\n"
         "filled = observed, line = fitted; the contour marks LR = 1, where the scores "
         "say nothing either way",
-        fontsize=10.5, color=INK, y=1.0,
+        fontsize=10.5,
+        color=INK,
+        y=1.0,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(path, dpi=160, facecolor=SURFACE)

@@ -15,3 +15,4 @@ model_*.pkl
 # Fitted simple densities + figures
 simple_*.pkl
 *.png
+cfmid_scores.parquet
