@@ -16,3 +16,5 @@ model_*.pkl
 simple_*.pkl
 *.png
 cfmid_scores.parquet
+structure_identifications_all.parquet
+__marimo__/

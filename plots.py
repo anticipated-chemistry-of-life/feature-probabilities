@@ -21,6 +21,7 @@ from simple_densities import (
     ENT,
     EPS,
     PATTERNS,
+    BinnedKDE,
     SimpleDensities,
     load_labeled,
     logit,
@@ -96,13 +97,14 @@ def lr_surface(model: SimpleDensities, mz: float, n: int = 160, support: float =
     return s, np.ma.masked_where(f0 < support * f0.max(), lr)
 
 
-def figure(method: str = "kde", path: str = "densities_fit.png") -> str:
+def figure(method: str = "kde", fold: str = "train") -> str:
+    path = f"densities_fit_{fold}.png"
     df = load_labeled()
     fig, axes = plt.subplots(2, 3, figsize=(13.5, 7.2))
 
     for r, inst in enumerate(("Orbitrap", "QTOF")):
         model = SimpleDensities.load(f"simple_{method}_{inst}.pkl")
-        tr = df.filter((pl.col("instrument") == inst) & (pl.col("fold") == "train"))
+        tr = df.filter((pl.col("instrument") == inst) & (pl.col("fold") == fold))
         mz_med = float(tr["precursor_mz"].median())
 
         for k, (col, label) in enumerate(
@@ -204,4 +206,6 @@ def figure(method: str = "kde", path: str = "densities_fit.png") -> str:
 
 
 if __name__ == "__main__":
-    print("->", figure())
+    print("->", figure(fold="train"))
+    print("->", figure(fold="test"))
+    print("->", figure(fold="val"))

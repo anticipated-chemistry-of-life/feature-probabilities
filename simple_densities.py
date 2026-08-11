@@ -81,7 +81,9 @@ def load_labeled(path: str = "cfmid_scores.parquet") -> pl.DataFrame:
             .cast(pl.Int8)
             .alias("is_correct"),
             pl.when(pl.col("ppm_precursor_mz_diff").abs() > 1e-9)
-            .then(pl.col("abs_precursor_mz_diff") / pl.col("ppm_precursor_mz_diff") * 1e6)
+            .then(
+                pl.col("abs_precursor_mz_diff") / pl.col("ppm_precursor_mz_diff") * 1e6
+            )
             .otherwise(None)
             .alias("precursor_mz"),
         )
@@ -166,7 +168,8 @@ class BinnedKDE:
         lo, hi = X.min(axis=0), X.max(axis=0)
         pad = 0.05 * np.maximum(hi - lo, 1e-6)
         self.edges = [
-            np.linspace(lo[j] - pad[j], hi[j] + pad[j], self.n_bins + 1) for j in range(d)
+            np.linspace(lo[j] - pad[j], hi[j] + pad[j], self.n_bins + 1)
+            for j in range(d)
         ]
         idx = [
             np.clip(np.digitize(X[:, j], self.edges[j][1:-1]), 0, self.n_bins - 1)
@@ -226,7 +229,9 @@ class SimpleDensities:
     min_fit: int = 200  # below this a pattern/class cell is not fitted separately
     prior: float = 0.0
     p_absent: float = 0.0
-    log_pi: dict = field(default_factory=dict)  # (pattern, class) -> log P(pattern|class)
+    log_pi: dict = field(
+        default_factory=dict
+    )  # (pattern, class) -> log P(pattern|class)
     dens: dict = field(default_factory=dict)  # (pattern, class) -> density backend
 
     def fit(self, df: pl.DataFrame) -> "SimpleDensities":
@@ -264,10 +269,14 @@ class SimpleDensities:
                     # two means. Weighted by class size, so the 1.2% positives barely
                     # move it -- which is the point, and also its main weakness here.
                     dfree = len(sub[0]) + len(sub[1]) - 2
-                    pooled = sum(
-                        np.atleast_2d(np.cov(sub[c], rowvar=False)) * (len(sub[c]) - 1)
-                        for c in (0, 1)
-                    ) / dfree
+                    pooled = (
+                        sum(
+                            np.atleast_2d(np.cov(sub[c], rowvar=False))
+                            * (len(sub[c]) - 1)
+                            for c in (0, 1)
+                        )
+                        / dfree
+                    )
                 for cls in (0, 1):
                     self.dens[p, cls] = Gaussian().fit(sub[cls], cov=pooled)
         return self
@@ -366,12 +375,16 @@ def cluster_bootstrap_auc(
     y = df["is_correct"].to_numpy()
     codes = df["inchikey_msg"].to_physical().rank("dense").to_numpy() - 1
     order = np.argsort(codes, kind="stable")
-    groups = np.split(order, np.searchsorted(codes[order], np.arange(1, codes.max() + 1)))
+    groups = np.split(
+        order, np.searchsorted(codes[order], np.arange(1, codes.max() + 1))
+    )
 
     rng = np.random.default_rng(seed)
     boots = []
     for _ in range(n_boot):
-        idx = np.concatenate([groups[i] for i in rng.integers(0, len(groups), len(groups))])
+        idx = np.concatenate(
+            [groups[i] for i in rng.integers(0, len(groups), len(groups))]
+        )
         yb = y[idx]
         if 0 < yb.sum() < len(yb):
             boots.append(roc_auc_score(yb, score[idx]))
@@ -426,7 +439,9 @@ def report(name: str, model: SimpleDensities, te: pl.DataFrame) -> dict:
     )
     absent = 1 - gf["truth_present"].to_numpy()
     brier, base = np.mean((p_none - absent) ** 2), np.mean((pa - absent) ** 2)
-    print(f"\nP(truth not in library):  train prior={pa:.3f}  held-out actual={absent.mean():.3f}")
+    print(
+        f"\nP(truth not in library):  train prior={pa:.3f}  held-out actual={absent.mean():.3f}"
+    )
     print(f"  AUC  = {roc_auc_score(absent, p_none):.3f}")
     print(f"  Brier= {brier:.4f}   constant-prior baseline = {base:.4f}")
 
@@ -460,10 +475,15 @@ def fit_all(
     written = {}
     for inst in ("Orbitrap", "QTOF"):
         sub = df.filter(pl.col("instrument") == inst)
-        model = SimpleDensities(method=method).fit(sub.filter(pl.col("fold") == "train"))
+        model = SimpleDensities(method=method).fit(
+            sub.filter(pl.col("fold") == "train")
+        )
         if not quiet:
-            report(f"{inst}  method={method}  evaluated on: {eval_fold}", model,
-                   sub.filter(pl.col("fold") == eval_fold))
+            report(
+                f"{inst}  method={method}  evaluated on: {eval_fold}",
+                model,
+                sub.filter(pl.col("fold") == eval_fold),
+            )
         out = f"{out_dir.rstrip('/')}/simple_{method}_{inst}.pkl"
         model.save(out)
         written[inst] = out

@@ -138,13 +138,17 @@ class ConditionalDensities:
         nb = len(self.mz_edges) - 1
         tot = np.bincount(im, minlength=nb)
         self.prior_by_band = np.where(
-            tot > 0, np.bincount(im, weights=y.astype(float), minlength=nb) / np.maximum(tot, 1), self.prior
+            tot > 0,
+            np.bincount(im, weights=y.astype(float), minlength=nb) / np.maximum(tot, 1),
+            self.prior,
         )
         # Fraction of features whose true molecule is absent from the library entirely.
         # Fitted for convenience, but it is the least transferable quantity in the model
         # -- override it on any population that is not distributed like the train fold.
         self.p_absent = 1.0 - float(
-            df.group_by("feature_id").agg(pl.col("truth_present").first())["truth_present"].mean()
+            df.group_by("feature_id")
+            .agg(pl.col("truth_present").first())["truth_present"]
+            .mean()
         )
         return self
 
@@ -301,7 +305,9 @@ class ConditionalDensities:
 
     def band_prior(self, mz) -> np.ndarray:
         """Fitted per-row P(correct) in the m/z band each query falls into."""
-        _, _, im = self._cells_raw(*(np.atleast_1d(np.asarray(v, float)) for v in (0.0, 0.0, mz)))
+        _, _, im = self._cells_raw(
+            *(np.atleast_1d(np.asarray(v, float)) for v in (0.0, 0.0, mz))
+        )
         return self.prior_by_band[im]
 
     def posterior(self, ent, cos, mz, prior=None) -> np.ndarray:

@@ -95,14 +95,24 @@ def fit(data, out_dir, quiet, eval_fold, mz_cuts):
     help="Per-row P(correct) used to turn the ratio into a posterior. "
     "Defaults to the fitted rate for this m/z band.",
 )
-@click.option("--n-candidates", type=int, default=None,
-              help="Rivals this candidate competes with. Adds the per-feature posterior, "
-                   "assuming the others are uninformative (LR=1).")
-@click.option("--p-absent", type=float, default=None,
-              help="P(truth not in the library), for --n-candidates. "
-                   "Defaults to the fitted train-fold rate.")
+@click.option(
+    "--n-candidates",
+    type=int,
+    default=None,
+    help="Rivals this candidate competes with. Adds the per-feature posterior, "
+    "assuming the others are uninformative (LR=1).",
+)
+@click.option(
+    "--p-absent",
+    type=float,
+    default=None,
+    help="P(truth not in the library), for --n-candidates. "
+    "Defaults to the fitted train-fold rate.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
-def score(entropy, cosine, mz, instrument, model_dir, prior, n_candidates, p_absent, as_json):
+def score(
+    entropy, cosine, mz, instrument, model_dir, prior, n_candidates, p_absent, as_json
+):
     """P(scores | correct), P(scores | incorrect), and P(correct | scores)."""
     for name, v in (("entropy", entropy), ("cosine", cosine)):
         if not 0.0 <= v <= 1.0:
@@ -127,8 +137,9 @@ def score(entropy, cosine, mz, instrument, model_dir, prior, n_candidates, p_abs
     if n_candidates is not None:
         pa = float(d.p_absent) if p_absent is None else p_absent
         # Rivals are unscored here, so they are given LR=1 -- the neutral assumption.
-        feature_post = float(posterior_over_candidates(
-            np.r_[lr, np.ones(n_candidates - 1)], pa)[0])
+        feature_post = float(
+            posterior_over_candidates(np.r_[lr, np.ones(n_candidates - 1)], pa)[0]
+        )
 
     # A score of exactly 0 means "no shared fragments" and carries finite probability
     # mass, so on those faces the answer is a mass and not a density.
@@ -166,7 +177,9 @@ def score(entropy, cosine, mz, instrument, model_dir, prior, n_candidates, p_abs
     click.echo(f"\n  prior P(correct) for this m/z band = {used_prior:.5f}")
     click.echo(f"  P(correct | scores)   = {post:.5f}")
     if feature_post is not None:
-        click.echo(f"  P(correct | scores, {n_candidates} candidates) = {feature_post:.5f}")
+        click.echo(
+            f"  P(correct | scores, {n_candidates} candidates) = {feature_post:.5f}"
+        )
     else:
         click.echo(
             "\nThat posterior treats the candidate in isolation. Within a feature only one\n"
