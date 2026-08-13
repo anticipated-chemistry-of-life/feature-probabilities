@@ -63,6 +63,15 @@ def _(pl, sns):
             (pl.col("is_correct").sum() > 0)
             .cast(pl.Int8)
             .alias("correct_mol_was_found"),
+            pl.col("entropy_similarity")
+            .sort(descending=True)
+            .head(2)
+            .diff()
+            .drop_nulls()
+            .first()
+            .fill_null(0)
+            .abs()
+            .alias("top1_top2_diff"),
         )
         .collect()
     )
@@ -74,6 +83,28 @@ def _(pl, sns):
         common_norm=False,
         stat="density",
         kde=True,
+    )
+    return
+
+
+@app.cell
+def _(pl, sns):
+    _df = (
+        pl.scan_parquet("cfmid_scores.parquet")
+        .with_columns(
+            (pl.col("inchikey_isdb") == pl.col("inchikey_msg"))
+            .cast(pl.Int8)
+            .alias("is_correct")
+        )
+        .collect()
+    )
+
+    sns.histplot(
+        data=_df,
+        hue="is_correct",
+        x="entropy_similarity",
+        y="ModifiedCosineGreedy",
+        common_norm=False,
     )
     return
 
