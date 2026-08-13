@@ -49,7 +49,7 @@ def _(msg, pl):
         # `isfinite | isnan` keeps everything except +/-inf. is_infinite() is
         # null for null rows, so fill_null(False) keeps missing scores as pandas did.
         .filter(~pl.col("CSI:FingerIDScore").is_infinite().fill_null(False))
-        .unique(["inchikey_msg", "instrument_type"])
+        .unique(["inchikey_msg", "adduct", "instrument_type"])
         .collect()
     )
     return (df,)
@@ -112,20 +112,11 @@ def _(data, kde, np, plt):
 
 
 @app.cell
-def _(df):
-    df["structurePerIdRank"].describe()
-    return
-
-
-@app.cell
 def _(pl):
-    pl.scan_parquet("structure_identifications_all.parquet").head().collect()
-    return
-
-
-@app.cell
-def _(pl):
-    pl.scan_parquet("structure_identifications_all.parquet").group_by("mappingFeatureId").agg(
+    pl.scan_parquet("structure_identifications_all.parquet").group_by(
+        "mappingFeatureId"
+    ).agg(
+        pl.col("ionMass").mean(),
         pl.col("CSI:FingerIDScore").mean().alias("mean"),
         pl.col("CSI:FingerIDScore").median().alias("median"),
         pl.col("CSI:FingerIDScore").var().alias("var"),
