@@ -9,11 +9,11 @@ A chromatographic peak with its MS2 spectrum, produced by SIRIUS's peak-picking 
 _Avoid_: peak, spectrum (ambiguous with a raw, unpicked scan)
 
 **Structure candidate**:
-A molecule SIRIUS/CSI:FingerID proposes as a possible identity for a feature, carrying a CSI:FingerID score and an ion mass.
+A molecule SIRIUS/CSI:FingerID proposes as a possible identity for a feature, carrying a CSI:FingerID score. Returned by `get_structure_candidates` (PySirius `StructureCandidateFormula`) — this row does NOT itself carry ion mass.
 _Avoid_: molecule (too generic on its own), hit
 
 **Annotation**:
-One feature–structure-candidate pair together with its CSI:FingerID score and ion mass — the row unit returned by `get_structure_candidates` and consumed by calibration.
+One feature–structure-candidate pair: a structure candidate's CSI:FingerID score joined to its feature's ion mass. Ion mass lives on the feature (PySirius `AlignedFeature.ionMass`), not on the structure-candidate row, so producing an Annotation requires joining the two by feature id — the row unit consumed by calibration.
 
 **Ground truth set**:
 MassSpecGym v1.5, the benchmark dataset of spectra with known true structures, used to fit the calibration score's KDE.
