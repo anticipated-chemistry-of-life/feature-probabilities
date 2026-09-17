@@ -5,7 +5,7 @@ Turns an mzML file into a table of probabilities that a given molecule is the co
 ## Language
 
 **Feature**:
-A chromatographic peak with its MS2 spectrum, produced by SIRIUS's peak-picking step from an mzML run. The unit being annotated.
+One MS2 spectrum treated as an analytical unit by SIRIUS — either detected via SIRIUS's peak-picking from an mzML run, or supplied already-picked (e.g. one MassSpecGym spectrum, imported without peak-picking). The unit being annotated.
 _Avoid_: peak, spectrum (ambiguous with a raw, unpicked scan)
 
 **Structure candidate**:
@@ -14,6 +14,13 @@ _Avoid_: molecule (too generic on its own), hit
 
 **Annotation**:
 One feature–structure-candidate pair: a structure candidate's CSI:FingerID score joined to its feature's ion mass. Ion mass lives on the feature (PySirius `AlignedFeature.ionMass`), not on the structure-candidate row, so producing an Annotation requires joining the two by feature id — the row unit consumed by calibration.
+
+**Extract**:
+The physical sample (a species plus, e.g., organ) that one or more SIRIUS runs are acquired from. Purely biological/sample provenance — acquisition-specific detail (ionization mode, instrument type) lives on the SIRIUS run, not here.
+
+**SIRIUS run**:
+One execution of SIRIUS against one input spectra file (an mzML or an MGF chunk) with one fixed parameter set, identified by the rerun-avoidance caching key. A **field run** processes a real mzML tied to an Extract; a **ground truth run** processes a MassSpecGym chunk and has no Extract. Reprocessing the same input file with different parameters produces a new, coexisting SIRIUS run — never overwrites a prior one.
+_Avoid_: job (SIRIUS's own API term for the async task that executes a run — a run is the durable record, a job is how it got produced)
 
 **Ground truth set**:
 MassSpecGym v1.5, the benchmark dataset of spectra with known true structures, used to fit the calibration score's KDE.
