@@ -32,3 +32,6 @@ _Avoid_: exact match, true positive (without qualifying "skeleton-level")
 **Calibration score**:
 The value a KDE fitted on the ground truth set's correct assignments returns for a feature–candidate pair's (ion mass, CSI:FingerID score). A density used to rank candidates within a feature, not a normalized posterior probability.
 _Avoid_: probability, confidence (both imply a calibrated posterior, which this isn't)
+
+**Feature-probability table**:
+`annotate`'s final exported table (one row per feature–structure-candidate pair with its calibration score) — the deliverable the whole pipeline produces for a batch of new mzML files.
