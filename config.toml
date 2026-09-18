@@ -1,6 +1,6 @@
 # feature-probabilities pipeline config.
 #
-# Loaded by fp-generate-groundtruth, fp-fit-kde, and fp-annotate via
+# Loaded by generate-groundtruth, fp-fit-kde, and fp-annotate via
 # feature_probabilities.config.load_config(). Each CLI's flags override
 # individual keys here; an unset flag leaves this file's value untouched.
 # Check in changes to this file so a reproducible run is a versioned file,
@@ -14,7 +14,7 @@ db_path = "db/database.duckdb"
 required_sirius_version = "6.0.0"
 
 # Pinned MassSpecGym v1.5 HuggingFace dataset revision (commit SHA) that
-# fp-generate-groundtruth fetches by default. See issue #13 for how this is
+# generate-groundtruth fetches by default. See issue #13 for how this is
 # resolved and kept current.
 massspecgym_revision = "d2e86d0c3bd905a6d578c0dd6053ed2bd41f9c2a"
 

@@ -1,4 +1,4 @@
-"""Tests for the `fp-generate-groundtruth` happy-path CLI.
+"""Tests for the `generate-groundtruth` happy-path CLI.
 
 Exercises the CLI end-to-end via `click.testing.CliRunner`, with
 `fetch_massspecgym_tsv` monkeypatched to a small local fixture TSV (no live

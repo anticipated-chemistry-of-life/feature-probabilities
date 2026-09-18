@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-fp-generate-groundtruth = "feature_probabilities.cli_generate_groundtruth:main"
+generate-groundtruth = "feature_probabilities.cli_generate_groundtruth:main"
 
 [dependency-groups]
 dev = [

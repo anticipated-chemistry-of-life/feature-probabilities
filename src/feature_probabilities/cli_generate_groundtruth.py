@@ -1,4 +1,4 @@
-"""``fp-generate-groundtruth``: the happy-path MassSpecGym-vs-SIRIUS ground-truth CLI.
+"""``generate-groundtruth``: the happy-path MassSpecGym-vs-SIRIUS ground-truth CLI.
 
 Issue #20's first end-to-end, runnable slice of this executable: given the
 shared TOML config (#11), fetches and chunks a pinned MassSpecGym revision
@@ -216,7 +216,7 @@ def generate_groundtruth(
 def _format_summary(summary: GroundtruthSummary) -> str:
     newly_run = summary.chunks_processed - summary.cache_hits
     return (
-        f"fp-generate-groundtruth: processed {summary.chunks_processed} chunk(s) "
+        f"generate-groundtruth: processed {summary.chunks_processed} chunk(s) "
         f"({summary.cache_hits} cache hit(s), {newly_run} newly run), covering "
         f"{summary.features_seen} feature(s) and {summary.annotations_seen} "
         "annotation(s)."
@@ -260,7 +260,7 @@ def main(
         try:
             sirius = Sirius(headless=True)
             with (
-                tempfile.TemporaryDirectory(prefix="fp-generate-groundtruth-") as tmp,
+                tempfile.TemporaryDirectory(prefix="generate-groundtruth-") as tmp,
                 Session(engine) as session,
             ):
                 summary = generate_groundtruth(

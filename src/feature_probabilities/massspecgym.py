@@ -1,6 +1,6 @@
 """Pinned-by-default fetch, parsing, and SIRIUS-chunking of MassSpecGym v1.5.
 
-``fp-generate-groundtruth`` must always start from a byte-for-byte
+``generate-groundtruth`` must always start from a byte-for-byte
 reproducible ground-truth set, so :func:`fetch_massspecgym_tsv` resolves
 ``roman-bushuiev/MassSpecGym``'s ``data/MassSpecGym1.5.tsv`` at an exact,
 documented commit SHA (:data:`PINNED_MASSSPECGYM_REVISION`) rather than at

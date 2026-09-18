@@ -2,7 +2,7 @@
 
 Ties the `Sirius` wrapper (`sirius.py`), the checksum functions
 (`checksums.py`), and the DuckDB schema (`schema.py`) together into the
-actual rerun-avoidance behavior both `fp-generate-groundtruth` and
+actual rerun-avoidance behavior both `generate-groundtruth` and
 `fp-annotate` are built on:
 
 - Before any SIRIUS call, compute `input_file_checksum`,
