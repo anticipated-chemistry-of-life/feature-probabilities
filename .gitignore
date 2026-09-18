@@ -21,4 +21,5 @@ __marimo__/
 
 .env
 db/database.sqlite3
+db/database.duckdb
 external/
