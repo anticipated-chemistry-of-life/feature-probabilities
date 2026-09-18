@@ -11,7 +11,7 @@ db_path = "db/database.duckdb"
 # Installed SIRIUS version the SIRIUS-touching executables require; a
 # mismatch fails fast before any SIRIUS call is made. Bump deliberately when
 # upgrading the pipeline to a newer SIRIUS release.
-required_sirius_version = "6.0.0"
+required_sirius_version = "6.3.12"
 
 # Pinned MassSpecGym v1.5 HuggingFace dataset revision (commit SHA) that
 # generate-groundtruth fetches by default. See issue #13 for how this is
