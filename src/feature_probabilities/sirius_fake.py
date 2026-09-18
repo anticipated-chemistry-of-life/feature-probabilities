@@ -25,6 +25,14 @@ Every call that would talk to a real SIRIUS process is recorded
 (`create_project_calls`, `import_spectra_calls`, `run_calls`), so a test can
 assert a cache hit made zero such calls without inspecting any other
 internal state.
+
+`fail_on_run` simulates a SIRIUS analysis-job failure for one specific
+chunk/file (issue #21's batch-resilience acceptance criteria): keyed by
+`Path(spectra_file).name` rather than the full path, since a caller that
+writes chunks to a fresh temp directory each invocation (as
+`generate-groundtruth` does) doesn't control the full path. The matching
+`run_calls` entry is still recorded before the configured exception is
+raised, mirroring a real SIRIUS job that was submitted but failed.
 """
 
 from __future__ import annotations
@@ -59,6 +67,9 @@ _DEFAULT_FEATURE = AlignedFeature(
 
 #: A default canned result set: one feature with one structure candidate,
 #: used for any spectra file not given a specific entry in `canned_results`.
+#: Sets every NOT NULL `annotations` column (including `xlogp`, easy to
+#: forget since `StructureCandidateFormula.xlog_p` silently defaults to
+#: `None`), so this default is safe to actually persist, not just cache.
 DEFAULT_RESULTS: tuple[FeatureStructureCandidate, ...] = (
     FeatureStructureCandidate(
         feature=_DEFAULT_FEATURE,
@@ -72,6 +83,7 @@ DEFAULT_RESULTS: tuple[FeatureStructureCandidate, ...] = (
             molecular_formula="C2H6O",
             adduct="[M+H]+",
             formula_id="fake-formula-1",
+            xlog_p=0.5,
         ),
     ),
 )
@@ -92,6 +104,9 @@ class FakeSirius:
     default_results: list[FeatureStructureCandidate] = field(
         default_factory=lambda: list(DEFAULT_RESULTS)
     )
+    #: Spectra file names (`Path(file).name`) whose `run` call raises the
+    #: paired exception instead of succeeding.
+    fail_on_run: dict[str, Exception] = field(default_factory=dict)
 
     #: Every `(project_path, project_name)` passed to `create_project`, in order.
     create_project_calls: list[tuple[Path, str | None]] = field(
@@ -129,6 +144,10 @@ class FakeSirius:
     def run(self, job_submission: JobSubmission) -> None:
         self._require_project()
         self.run_calls.append(job_submission)
+        if self._current_spectra_file is not None:
+            failure = self.fail_on_run.get(self._current_spectra_file.name)
+            if failure is not None:
+                raise failure
 
     def get_features(self) -> list[AlignedFeature]:
         self._require_project()

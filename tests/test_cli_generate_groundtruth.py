@@ -108,11 +108,15 @@ def _fake_sirius_for(identifier: str, inchikey: str) -> FakeSirius:
     )
     return FakeSirius(
         default_features=[feature],
-        default_results=[FeatureStructureCandidate(feature=feature, candidate=candidate)],
+        default_results=[
+            FeatureStructureCandidate(feature=feature, candidate=candidate)
+        ],
     )
 
 
-def _patch_seams(monkeypatch: pytest.MonkeyPatch, *, tsv_path: Path, fake: FakeSirius) -> None:
+def _patch_seams(
+    monkeypatch: pytest.MonkeyPatch, *, tsv_path: Path, fake: FakeSirius
+) -> None:
     monkeypatch.setattr(
         "feature_probabilities.cli_generate_groundtruth.fetch_massspecgym_tsv",
         lambda revision=None: tsv_path,
@@ -236,7 +240,9 @@ def test_sirius_version_mismatch_fails_fast_with_nonzero_exit(
 
 
 def test_missing_config_file_fails_fast_with_nonzero_exit(tmp_path: Path) -> None:
-    result = CliRunner().invoke(main, ["--config", str(tmp_path / "does-not-exist.toml")])
+    result = CliRunner().invoke(
+        main, ["--config", str(tmp_path / "does-not-exist.toml")]
+    )
 
     assert result.exit_code != 0
     assert "does-not-exist.toml" in result.output
@@ -260,3 +266,122 @@ def test_db_flag_overrides_the_config_files_db_path(
     assert result.exit_code == 0, result.output
     assert override_db_path.exists()
     assert not config_only_db_path.exists()
+
+
+def test_force_flag_recomputes_every_chunk_even_when_fully_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tsv_path = _write_tsv(tmp_path, [_row("msg-1")])
+    fake = _fake_sirius_for("msg-1", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+
+    first = CliRunner().invoke(main, ["--config", str(config_path)])
+    assert first.exit_code == 0, first.output
+    assert len(fake.import_spectra_calls) == 1
+    assert len(fake.run_calls) == 1
+
+    second = CliRunner().invoke(main, ["--config", str(config_path), "--force"])
+
+    assert second.exit_code == 0, second.output
+    assert len(fake.import_spectra_calls) == 2
+    assert len(fake.run_calls) == 2
+    assert fake.run_calls[-1].recompute is True
+
+    with _open_db(db_path) as session:
+        runs = session.scalars(select(SiriusRun)).all()
+        assert len(runs) == 2
+
+
+def test_instrument_type_filter_only_processes_matching_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-orbitrap", instrument_type="Orbitrap"),
+            _row("msg-qtof", instrument_type="QTOF"),
+        ],
+    )
+    fake = _fake_sirius_for("msg-1", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+
+    result = CliRunner().invoke(
+        main, ["--config", str(config_path), "--instrument-type", "Orbitrap"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(fake.import_spectra_calls) == 1
+    assert fake.import_spectra_calls[0][0].name == "orbitrap_0.mgf"
+
+    with _open_db(db_path) as session:
+        runs = session.scalars(select(SiriusRun)).all()
+        assert len(runs) == 1
+        assert runs[0].instrument_type == "Orbitrap"
+
+
+def test_one_chunk_failure_is_reported_others_succeed_and_exit_is_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-orbitrap", instrument_type="Orbitrap"),
+            _row("msg-qtof", instrument_type="QTOF"),
+        ],
+    )
+    fake = FakeSirius(fail_on_run={"qtof_0.mgf": RuntimeError("sirius blew up")})
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+
+    result = CliRunner().invoke(main, ["--config", str(config_path)])
+
+    assert result.exit_code != 0
+    assert "qtof_0.mgf" in result.output
+    assert "sirius blew up" in result.output
+
+    with _open_db(db_path) as session:
+        runs = session.scalars(select(SiriusRun)).all()
+        assert len(runs) == 1
+        assert runs[0].instrument_type == "Orbitrap"
+
+
+def test_rerun_after_partial_failure_only_reprocesses_the_failed_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-orbitrap", instrument_type="Orbitrap"),
+            _row("msg-qtof", instrument_type="QTOF"),
+        ],
+    )
+    fake = FakeSirius(fail_on_run={"qtof_0.mgf": RuntimeError("sirius blew up")})
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+
+    first = CliRunner().invoke(main, ["--config", str(config_path)])
+    assert first.exit_code != 0
+    assert len(fake.import_spectra_calls) == 2
+
+    fake.fail_on_run = {}
+
+    second = CliRunner().invoke(main, ["--config", str(config_path)])
+
+    assert second.exit_code == 0, second.output
+    assert len(fake.import_spectra_calls) == 3
+    assert fake.import_spectra_calls[-1][0].name == "qtof_0.mgf"
+
+    with _open_db(db_path) as session:
+        runs = session.scalars(select(SiriusRun)).all()
+        assert len(runs) == 2
+        assert {run.instrument_type for run in runs} == {"Orbitrap", "QTOF"}

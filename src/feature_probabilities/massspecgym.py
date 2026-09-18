@@ -261,6 +261,14 @@ def parse_massspecgym_spectra(tsv_path: Path) -> list[Spectrum]:
     return [_row_to_spectrum(row) for _, row in df.iterrows()]
 
 
+def spectrum_instrument_type(spectrum: Spectrum) -> str:
+    """`spectrum`'s `instrument_type` metadata value, as the plain `str` every
+    caller needs (grouping/chunking here, `--instrument-type` filtering in
+    `cli_generate_groundtruth`) -- the one place that conversion happens.
+    """
+    return str(spectrum.get("instrument_type"))
+
+
 def _instrument_type_slug(instrument_type: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9]+", "_", instrument_type.strip()).strip("_").lower()
     return slug or "unknown"
@@ -284,7 +292,7 @@ def write_sirius_chunks(
     output_dir.mkdir(parents=True, exist_ok=True)
     grouped: dict[str, list[Spectrum]] = {}
     for spectrum in spectra:
-        instrument_type = str(spectrum.get("instrument_type"))
+        instrument_type = spectrum_instrument_type(spectrum)
         grouped.setdefault(instrument_type, []).append(spectrum)
 
     chunk_paths: dict[str, list[Path]] = {}
