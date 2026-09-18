@@ -22,6 +22,7 @@ def _row(
     mzs: str = "50.0,100.0,150.0",
     intensities: str = "10.0,20.0,30.0",
     precursor_mz: str = "151.0",
+    collision_energy: str = "30",
 ) -> dict[str, str]:
     return {
         "identifier": identifier,
@@ -35,7 +36,7 @@ def _row(
         "precursor_mz": precursor_mz,
         "adduct": "[M+H]+",
         "instrument_type": instrument_type,
-        "collision_energy": "30",
+        "collision_energy": collision_energy,
         "fold": "train",
         "simulation_challenge": "false",
     }
@@ -118,6 +119,26 @@ def test_formula_and_precursor_formula_are_cleared_before_writing(tmp_path: Path
     block = _mgf_blocks(chunk_paths["Orbitrap"][0])[0]
     assert "FORMULA=" not in block
     assert "PRECURSOR_FORMULA=" not in block
+
+
+def test_present_collision_energy_is_written(tmp_path: Path) -> None:
+    tsv_path = _write_tsv(tmp_path, [_row("msg-1", collision_energy="35")])
+    output_dir = tmp_path / "chunks"
+
+    chunk_paths = chunk_massspecgym_for_sirius(tsv_path, output_dir)
+
+    block = _mgf_blocks(chunk_paths["Orbitrap"][0])[0]
+    assert re.search(r"^COLLISION_ENERGY=35$", block, re.MULTILINE)
+
+
+def test_blank_collision_energy_does_not_raise_and_is_omitted(tmp_path: Path) -> None:
+    tsv_path = _write_tsv(tmp_path, [_row("msg-1", collision_energy="")])
+    output_dir = tmp_path / "chunks"
+
+    chunk_paths = chunk_massspecgym_for_sirius(tsv_path, output_dir)
+
+    block = _mgf_blocks(chunk_paths["Orbitrap"][0])[0]
+    assert "COLLISION_ENERGY=" not in block
 
 
 def test_missing_identifier_raises_clear_error(tmp_path: Path) -> None:

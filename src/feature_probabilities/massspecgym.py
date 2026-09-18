@@ -118,9 +118,18 @@ MASSSPECGYM_COLUMNS = (
 #: Non-array columns carried through to each spectrum's metadata and
 #: exported as MGF fields -- every value is required and non-blank, per
 #: acceptance criterion 4 ("malformed or missing required fields ... produce
-#: a clear error rather than a silently malformed chunk").
+#: a clear error rather than a silently malformed chunk"), except the
+#: columns in `_OPTIONAL_METADATA_COLUMNS`.
+#:
+#: `collision_energy` is optional per row: real MassSpecGym rows legitimately
+#: leave it blank for spectra with no recorded collision energy, so a blank
+#: value there is carried through as an absent MGF field rather than a parse
+#: error.
+_OPTIONAL_METADATA_COLUMNS = ("collision_energy",)
 _METADATA_COLUMNS = tuple(
-    column for column in MASSSPECGYM_COLUMNS if column not in ("mzs", "intensities")
+    column
+    for column in MASSSPECGYM_COLUMNS
+    if column not in ("mzs", "intensities", *_OPTIONAL_METADATA_COLUMNS)
 )
 
 #: `ms2mol-evaluation`'s existing per-chunk spectra cap for SIRIUS's
@@ -217,6 +226,9 @@ def _row_to_spectrum(row: pd.Series) -> Spectrum:
         if column != "identifier"
     }
     metadata["identifier"] = identifier
+    for column in _OPTIONAL_METADATA_COLUMNS:
+        if not _is_blank(row[column]):
+            metadata[column] = str(row[column])
     precursor_mz = _require_float(row, "precursor_mz", identifier=identifier)
 
     spectrum = Spectrum(mz=mzs, intensities=intensities, metadata=metadata)
@@ -232,7 +244,9 @@ def parse_massspecgym_spectra(tsv_path: Path) -> list[Spectrum]:
     Expects the columns `identifier`, `mzs`, `intensities`, `smiles`,
     `inchikey`, `formula`, `precursor_formula`, `parent_mass`,
     `precursor_mz`, `adduct`, `instrument_type`, `collision_energy`, `fold`,
-    `simulation_challenge`. Each returned spectrum carries the fields
+    `simulation_challenge`. `collision_energy` may be blank on a per-row
+    basis (not every MassSpecGym spectrum records one); every other column
+    is required and non-blank. Each returned spectrum carries the fields
     SIRIUS's pre-picked import path requires -- see
     `_add_required_metadata_for_sirius`.
 
