@@ -16,7 +16,7 @@ required_sirius_version = "6.0.0"
 # Pinned MassSpecGym v1.5 HuggingFace dataset revision (commit SHA) that
 # fp-generate-groundtruth fetches by default. See issue #13 for how this is
 # resolved and kept current.
-massspecgym_revision = "REPLACE_WITH_PINNED_HF_COMMIT_SHA"
+massspecgym_revision = "d2e86d0c3bd905a6d578c0dd6053ed2bd41f9c2a"
 
 [sirius.analysis_params]
 # Default SIRIUS JobSubmission analysis parameters, applied to every SIRIUS

@@ -23,6 +23,9 @@ dependencies = [
     "sqlalchemy>=2.0.44",
 ]
 
+[project.scripts]
+fp-generate-groundtruth = "feature_probabilities.cli_generate_groundtruth:main"
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
