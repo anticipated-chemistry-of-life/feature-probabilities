@@ -9,8 +9,12 @@ One MS2 spectrum treated as an analytical unit by SIRIUS — either detected via
 _Avoid_: peak, spectrum (ambiguous with a raw, unpicked scan)
 
 **Structure candidate**:
-A molecule SIRIUS/CSI:FingerID proposes as a possible identity for a feature, carrying a CSI:FingerID score. Returned by `get_structure_candidates` (PySirius `StructureCandidateFormula`) — this row does NOT itself carry ion mass.
-_Avoid_: molecule (too generic on its own), hit
+A molecule SIRIUS/CSI:FingerID proposes as a possible identity for a feature, carrying a CSI:FingerID score. Returned by `get_structure_candidates` (PySirius `StructureCandidateFormula`) — this row does NOT itself carry ion mass. Per-feature: the same underlying Molecule can appear as a structure candidate on many features.
+_Avoid_: molecule (see the distinct **Molecule** entry below — the two are not interchangeable), hit
+
+**Molecule**:
+The globally deduplicated, skeleton-level chemical identity a structure candidate resolves to: a first-block (14-character) InChIKey plus a canonical, stereochemistry-stripped 2D SMILES. Stored once regardless of how many features/structure candidates reference it. Both SIRIUS's candidate search and MassSpecGym's ground truth already operate at this granularity — neither ever exposes a longer, stereo-resolved key — so a Molecule never distinguishes stereoisomers of the same skeleton.
+_Avoid_: structure candidate (that's the per-feature, scored occurrence; a Molecule is the shared, unscored identity)
 
 **Annotation**:
 One feature–structure-candidate pair: a structure candidate's CSI:FingerID score joined to its feature's ion mass. Ion mass lives on the feature (PySirius `AlignedFeature.ionMass`), not on the structure-candidate row, so producing an Annotation requires joining the two by feature id — the row unit consumed by calibration.
