@@ -10,6 +10,7 @@ import pytest
 
 from feature_probabilities.massspecgym import (
     MASSSPECGYM_COLUMNS,
+    UNKNOWN_INSTRUMENT_TYPE,
     MassSpecGymParseError,
     chunk_massspecgym_for_sirius,
 )
@@ -139,6 +140,26 @@ def test_blank_collision_energy_does_not_raise_and_is_omitted(tmp_path: Path) ->
 
     block = _mgf_blocks(chunk_paths["Orbitrap"][0])[0]
     assert "COLLISION_ENERGY=" not in block
+
+
+def test_blank_instrument_type_does_not_raise_and_groups_under_unknown(
+    tmp_path: Path,
+) -> None:
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-1", instrument_type=""),
+            _row("msg-2", instrument_type="Orbitrap"),
+        ],
+    )
+    output_dir = tmp_path / "chunks"
+
+    chunk_paths = chunk_massspecgym_for_sirius(tsv_path, output_dir)
+
+    assert set(chunk_paths) == {UNKNOWN_INSTRUMENT_TYPE, "Orbitrap"}
+    assert len(_mgf_blocks(chunk_paths[UNKNOWN_INSTRUMENT_TYPE][0])) == 1
+    block = _mgf_blocks(chunk_paths[UNKNOWN_INSTRUMENT_TYPE][0])[0]
+    assert "INSTRUMENT_TYPE=" not in block
 
 
 def test_missing_identifier_raises_clear_error(tmp_path: Path) -> None:

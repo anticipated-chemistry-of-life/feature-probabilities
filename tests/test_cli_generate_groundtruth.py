@@ -20,7 +20,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from feature_probabilities.cli_generate_groundtruth import main
-from feature_probabilities.massspecgym import MASSSPECGYM_COLUMNS
+from feature_probabilities.massspecgym import (
+    MASSSPECGYM_COLUMNS,
+    UNKNOWN_INSTRUMENT_TYPE,
+)
 from feature_probabilities.schema import (
     SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
     Annotation,
@@ -385,3 +388,53 @@ def test_rerun_after_partial_failure_only_reprocesses_the_failed_chunk(
         runs = session.scalars(select(SiriusRun)).all()
         assert len(runs) == 2
         assert {run.instrument_type for run in runs} == {"Orbitrap", "QTOF"}
+
+
+def test_blank_instrument_type_rows_are_processed_under_the_default_all_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tsv_path = _write_tsv(tmp_path, [_row("msg-1", instrument_type="")])
+    fake = _fake_sirius_for("msg-1", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+
+    result = CliRunner().invoke(main, ["--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    assert len(fake.import_spectra_calls) == 1
+
+    with _open_db(db_path) as session:
+        runs = session.scalars(select(SiriusRun)).all()
+        assert len(runs) == 1
+        assert runs[0].instrument_type == UNKNOWN_INSTRUMENT_TYPE
+
+
+def test_blank_instrument_type_rows_are_excluded_by_a_specific_instrument_type_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-unknown", instrument_type=""),
+            _row("msg-orbitrap", instrument_type="Orbitrap"),
+        ],
+    )
+    fake = _fake_sirius_for("msg-1", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+
+    result = CliRunner().invoke(
+        main, ["--config", str(config_path), "--instrument-type", "Orbitrap"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(fake.import_spectra_calls) == 1
+
+    with _open_db(db_path) as session:
+        runs = session.scalars(select(SiriusRun)).all()
+        assert len(runs) == 1
+        assert runs[0].instrument_type == "Orbitrap"

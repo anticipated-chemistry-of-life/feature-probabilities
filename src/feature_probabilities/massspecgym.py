@@ -121,11 +121,14 @@ MASSSPECGYM_COLUMNS = (
 #: a clear error rather than a silently malformed chunk"), except the
 #: columns in `_OPTIONAL_METADATA_COLUMNS`.
 #:
-#: `collision_energy` is optional per row: real MassSpecGym rows legitimately
-#: leave it blank for spectra with no recorded collision energy, so a blank
-#: value there is carried through as an absent MGF field rather than a parse
-#: error.
-_OPTIONAL_METADATA_COLUMNS = ("collision_energy",)
+#: `collision_energy` and `instrument_type` are optional per row: real
+#: MassSpecGym rows legitimately leave either blank (no recorded collision
+#: energy; no instrument type on record for that spectrum), so a blank
+#: value there is carried through as an absent MGF field rather than a
+#: parse error. A blank `instrument_type` is grouped under
+#: `UNKNOWN_INSTRUMENT_TYPE` by `spectrum_instrument_type` -- see that
+#: function for how `--instrument-type` filtering treats it.
+_OPTIONAL_METADATA_COLUMNS = ("collision_energy", "instrument_type")
 _METADATA_COLUMNS = tuple(
     column
     for column in MASSSPECGYM_COLUMNS
@@ -261,12 +264,26 @@ def parse_massspecgym_spectra(tsv_path: Path) -> list[Spectrum]:
     return [_row_to_spectrum(row) for _, row in df.iterrows()]
 
 
+#: Sentinel `instrument_type` for a MassSpecGym row that left the column
+#: blank. Grouped into its own chunk (never mixed with a real instrument
+#: type) by `write_sirius_chunks`, and matches no concrete
+#: `--instrument-type` filter value, so these spectra are only processed
+#: when `--instrument-type all` (the default) is passed.
+UNKNOWN_INSTRUMENT_TYPE = "unknown"
+
+
 def spectrum_instrument_type(spectrum: Spectrum) -> str:
     """`spectrum`'s `instrument_type` metadata value, as the plain `str` every
     caller needs (grouping/chunking here, `--instrument-type` filtering in
     `cli_generate_groundtruth`) -- the one place that conversion happens.
+
+    Returns `UNKNOWN_INSTRUMENT_TYPE` for a spectrum whose MassSpecGym row
+    left `instrument_type` blank (an optional column -- see
+    `_OPTIONAL_METADATA_COLUMNS` -- so no `instrument_type` metadata key
+    exists on `spectrum` at all in that case).
     """
-    return str(spectrum.get("instrument_type"))
+    value = spectrum.get("instrument_type")
+    return str(value) if value else UNKNOWN_INSTRUMENT_TYPE
 
 
 def _instrument_type_slug(instrument_type: str) -> str:
@@ -284,7 +301,8 @@ def write_sirius_chunks(
 
     Returns a mapping of `instrument_type` -> ordered list of written chunk
     file paths, with exactly one key per instrument type present in
-    `spectra`. A group larger than `chunk_size` is split across multiple
+    `spectra` -- plus `UNKNOWN_INSTRUMENT_TYPE` when any spectrum left the
+    column blank. A group larger than `chunk_size` is split across multiple
     files rather than written as one oversized file, matching
     `ms2mol-evaluation`'s existing 30,000-spectra-per-chunk pattern
     generalized across every instrument type.
