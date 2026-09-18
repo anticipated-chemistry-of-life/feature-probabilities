@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from dotenv import load_dotenv
 from PySirius import (
     AccountCredentials,
     AlignedFeature,
@@ -172,6 +173,7 @@ class Sirius:
     """
 
     def __init__(self, *, headless: bool = True) -> None:
+        load_dotenv()
         sdk = SiriusSDK()
         api = sdk.attach_or_start_sirius(headless=headless)
         if api is None:
