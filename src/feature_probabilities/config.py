@@ -7,8 +7,9 @@ overriding individual keys. Precedence, highest to lowest:
 1. CLI flag values passed as ``overrides`` (a ``None`` entry means "flag not set"
    and is skipped, leaving lower layers untouched).
 2. Values present in the TOML config file.
-3. Hardcoded defaults baked into this module (currently: empty ``{}`` dicts for
-   the ``[sirius.analysis_params]``/``[sirius.import_params]`` tables when a
+3. Hardcoded defaults baked into this module (currently: ``"models/kde_model.pkl"``
+   for ``kde_output_path``, and empty ``{}`` dicts for the
+   ``[sirius.analysis_params]``/``[sirius.import_params]`` tables, when a
    config file omits them; ``db_path``, ``required_sirius_version``, and
    ``massspecgym_revision`` have no such default and are required).
 
@@ -32,6 +33,7 @@ DEFAULT_CONFIG_PATH = Path("config.toml")
 _REQUIRED_KEYS = ("db_path", "required_sirius_version", "massspecgym_revision")
 
 _DEFAULTS: TOMLTable = {
+    "kde_output_path": "models/kde_model.pkl",
     "sirius": {
         "analysis_params": {},
         "import_params": {},
@@ -58,6 +60,7 @@ class Config:
     db_path: str
     required_sirius_version: str
     massspecgym_revision: str
+    kde_output_path: str
     sirius: SiriusConfig
 
 
@@ -113,6 +116,7 @@ def load_config(
         db_path=str(merged["db_path"]),
         required_sirius_version=str(merged["required_sirius_version"]),
         massspecgym_revision=str(merged["massspecgym_revision"]),
+        kde_output_path=str(merged["kde_output_path"]),
         sirius=SiriusConfig(
             analysis_params=dict(sirius_data.get("analysis_params") or {}),
             import_params=dict(sirius_data.get("import_params") or {}),

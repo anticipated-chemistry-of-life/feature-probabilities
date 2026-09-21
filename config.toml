@@ -18,6 +18,10 @@ required_sirius_version = "6.3.12"
 # resolved and kept current.
 massspecgym_revision = "d2e86d0c3bd905a6d578c0dd6053ed2bd41f9c2a"
 
+# Default pickle path fit-kde writes its stratified KDE calibration
+# artifact to; overridable per-run via --output. See issue #22.
+kde_output_path = "models/kde_model.pkl"
+
 [sirius.analysis_params]
 # Default SIRIUS JobSubmission analysis parameters, applied to every SIRIUS
 # run unless a CLI flag overrides a specific key. Populated as the SIRIUS
