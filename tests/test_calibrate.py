@@ -241,6 +241,61 @@ def test_second_kde_model_id_inserts_a_second_row_rather_than_overwriting() -> N
         assert score_v1 != pytest.approx(score_v2)
 
 
+def test_same_kde_model_id_updates_the_existing_row_in_place() -> None:
+    """Issue #25: annotate must be able to reprocess an unchanged, cache-hit
+    batch against the same default kde_model_id without a primary-key
+    conflict -- so a second `apply_calibration` call for the same
+    `(annotation_id, kde_model_id)` pair overwrites the stored score rather
+    than raising `IntegrityError`.
+    """
+    engine = create_database(":memory:")
+    with Session(engine) as session:
+        kdes_v1 = _kdes()
+        annotation_id = _insert_annotation(
+            session,
+            instrument_type="Orbitrap",
+            ion_mass=300.2,
+            csi_score=0.9,
+            inchikey="GGGGGGGGGGGGGG",
+            run_suffix="orb",
+        )
+        kde_model = KdeModel(artifact_path="/artifacts/kde-v1.pkl")
+        session.add(kde_model)
+        session.flush()
+        apply_calibration(
+            session, kdes_v1, kde_model.kde_model_id, annotation_ids=[annotation_id]
+        )
+
+        # A distinctly different refit under the *same* kde_model_id, so a
+        # changed pdf value at the same point proves the row was
+        # overwritten in place rather than left stale or duplicated.
+        kdes_v2 = {
+            "Orbitrap": _kde([(310.0, 0.6), (311.0, 0.62), (309.5, 0.58)]),
+            "QTOF": _kde([(500.0, 0.5), (501.0, 0.55), (499.0, 0.52)]),
+            GLOBAL_STRATUM: _kde(
+                [(310.0, 0.6), (311.0, 0.62), (309.5, 0.58), (500.0, 0.5)]
+            ),
+        }
+
+        summary = apply_calibration(
+            session, kdes_v2, kde_model.kde_model_id, annotation_ids=[annotation_id]
+        )
+
+        assert summary.annotations_scored == 1
+        rows = session.scalars(
+            select(CalibrationScore).where(
+                CalibrationScore.annotation_id == annotation_id
+            )
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].score == pytest.approx(
+            float(kdes_v2["Orbitrap"].pdf((300.2, 0.9))[0])
+        )
+        assert rows[0].score != pytest.approx(
+            float(kdes_v1["Orbitrap"].pdf((300.2, 0.9))[0])
+        )
+
+
 def test_only_requested_annotation_ids_are_scored_other_rows_untouched() -> None:
     engine = create_database(":memory:")
     with Session(engine) as session:
