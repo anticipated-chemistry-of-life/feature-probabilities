@@ -1,6 +1,6 @@
 """Shared TOML config loader for the feature-probabilities CLI executables.
 
-Every CLI (``generate-groundtruth``, ``fp-fit-kde``, ``fp-annotate``) loads its
+Every CLI (``generate-groundtruth``, ``fit-kde``, ``annotate``) loads its
 settings through :func:`load_config`: a checked-in TOML file with CLI flags
 overriding individual keys. Precedence, highest to lowest:
 

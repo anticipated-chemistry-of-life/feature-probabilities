@@ -13,7 +13,7 @@ spectra file path passed to `import_spectra` (`canned_features`/
 `canned_results`), mirroring how a real SIRIUS project's results actually
 depend on what was imported into it: a caller processing several
 chunks/mzML files against one long-lived `FakeSirius` instance (as
-`generate-groundtruth`/`fp-annotate` do -- one project per input file)
+`generate-groundtruth`/`annotate` do -- one project per input file)
 can configure a distinct canned result set per input file. Any file with no
 specific entry falls back to `default_features`/`default_results`, so a
 test that doesn't care about the exact data still gets a plausible,

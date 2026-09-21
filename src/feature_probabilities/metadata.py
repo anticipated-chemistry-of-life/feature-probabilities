@@ -1,6 +1,6 @@
 """Species/extract metadata upsert from a user-supplied CSV.
 
-`fp-annotate` always requires and upserts a metadata CSV on every invocation
+`annotate` always requires and upserts a metadata CSV on every invocation
 (issue #9's user story 17) rather than needing a separate one-time ingestion
 step -- there is no dedicated ingestion executable (issue #9's Out of Scope).
 This module is standalone from SIRIUS entirely: it only touches the
@@ -19,7 +19,7 @@ The CSV's columns map onto the two tables as follows:
 Two entry points cover the two ways later tickets consume this module:
 `upsert_metadata_csv` upserts every row in one pass (this ticket's own
 acceptance criteria), and `find_metadata_row_for_mzml` +
-`upsert_metadata_row` together let `fp-annotate` (#23) look up and upsert
+`upsert_metadata_row` together let `annotate` (#23) look up and upsert
 just the one row a given mzML file needs.
 """
 
@@ -206,7 +206,7 @@ def upsert_metadata_row(
     existing row rather than inserting a second one.
 
     `csv_path` is used only to make error messages actionable; pass it when
-    calling this directly (e.g. `fp-annotate` looking up one row via
+    calling this directly (e.g. `annotate` looking up one row via
     `find_metadata_row_for_mzml`) so a bad row still names its source file.
 
     Raises:

@@ -1,7 +1,7 @@
 """Pure data transform: raw ground-truth rows -> deduplicated correct assignments.
 
 Turns the ground-truth-run `features`/`annotations`/`molecules` rows #19
-persists into the deduplicated set of correct-assignment rows `fp-fit-kde`
+persists into the deduplicated set of correct-assignment rows `fit-kde`
 (#22) fits its KDE on. Deliberately does **not** read the DuckDB schema, run
 `scipy.stats.gaussian_kde`, or stratify by instrument type -- it only
 answers two questions, per the KDE calibration method decision (issue #7,
