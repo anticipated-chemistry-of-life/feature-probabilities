@@ -70,7 +70,9 @@ from feature_probabilities.sirius import (
     Sirius,
     SiriusCredentialsError,
     SiriusStartupError,
+    SiriusVersionMismatchError,
     SiriusVersionUnavailableError,
+    require_matching_sirius_version,
 )
 
 if TYPE_CHECKING:
@@ -84,10 +86,6 @@ if TYPE_CHECKING:
 #: `massspecgym._add_required_metadata_for_sirius`), so every ground-truth
 #: run this CLI creates is unconditionally recorded as positive-mode.
 _IONIZATION_MODE = "positive"
-
-
-class SiriusVersionMismatchError(Exception):
-    """Raised when the installed SIRIUS version doesn't match the config's."""
 
 
 #: Every error this CLI's `main` treats as a clean, actionable failure
@@ -127,23 +125,6 @@ class GroundtruthSummary:
     features_seen: int
     annotations_seen: int
     failures: tuple[ChunkFailure, ...] = ()
-
-
-def _require_matching_sirius_version(
-    sirius: SiriusInterface, required_version: str
-) -> None:
-    """Fail fast if the running SIRIUS instance isn't `required_version`.
-
-    Raises:
-        SiriusVersionMismatchError: the installed and required versions differ.
-    """
-    installed_version = sirius.get_version()
-    if installed_version != required_version:
-        raise SiriusVersionMismatchError(
-            f"Installed SIRIUS version {installed_version!r} does not match "
-            f"this config's required_sirius_version {required_version!r}. "
-            "Install the required SIRIUS version or update the config."
-        )
 
 
 def _true_inchikey_by_identifier(spectra: Sequence[Spectrum]) -> dict[str, str]:
@@ -192,7 +173,7 @@ def generate_groundtruth(
         MassSpecGymFetchError: MassSpecGym couldn't be fetched.
         MassSpecGymParseError: MassSpecGym's TSV is malformed.
     """
-    _require_matching_sirius_version(sirius, config.required_sirius_version)
+    require_matching_sirius_version(sirius, config.required_sirius_version)
 
     tsv_path = fetch_massspecgym_tsv(config.massspecgym_revision)
     spectra = parse_massspecgym_spectra(tsv_path)

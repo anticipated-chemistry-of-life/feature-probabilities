@@ -62,6 +62,15 @@ class SiriusVersionUnavailableError(RuntimeError):
     """Raised when a running SIRIUS instance's `get_info()` reports no version string."""
 
 
+class SiriusVersionMismatchError(Exception):
+    """Raised when the installed SIRIUS version doesn't match a config's required one.
+
+    Shared by every SIRIUS-touching CLI (`generate-groundtruth`, `annotate`)
+    via `require_matching_sirius_version` below, so their fail-fast version
+    checks raise byte-for-byte identical errors.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class FeatureStructureCandidate:
     """One feature-structure-candidate pair: a candidate joined with its feature.
@@ -149,6 +158,23 @@ class SiriusInterface(Protocol):
         candidates contributes no rows here (see `get_features` for those).
         """
         ...
+
+
+def require_matching_sirius_version(
+    sirius: SiriusInterface, required_version: str
+) -> None:
+    """Fail fast if the running SIRIUS instance isn't `required_version`.
+
+    Raises:
+        SiriusVersionMismatchError: the installed and required versions differ.
+    """
+    installed_version = sirius.get_version()
+    if installed_version != required_version:
+        raise SiriusVersionMismatchError(
+            f"Installed SIRIUS version {installed_version!r} does not match "
+            f"this config's required_sirius_version {required_version!r}. "
+            "Install the required SIRIUS version or update the config."
+        )
 
 
 def _credentials_from_env() -> AccountCredentials:
