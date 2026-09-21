@@ -192,12 +192,20 @@ def _run_and_persist(
     import_checksum: str | None,
     analysis_checksum: str,
 ) -> SiriusRunResult:
-    sirius.create_project(request.project_path, request.project_name)
-    sirius.import_spectra(request.input_file, params=request.import_params)
-    sirius.run(request.analysis_params)
+    try:
+        sirius.create_project(request.project_path, request.project_name)
+        sirius.import_spectra(request.input_file, params=request.import_params)
+        sirius.run(request.analysis_params)
 
-    aligned_features = sirius.get_features()
-    candidate_rows = sirius.get_structure_candidates()
+        aligned_features = sirius.get_features()
+        candidate_rows = sirius.get_structure_candidates()
+    finally:
+        # A project left open stays registered in the SIRIUS instance for its
+        # whole lifetime, holding its database open even once the temporary
+        # directory is gone -- one leak per chunk otherwise. Closed here, on
+        # the failure path too, since a failed chunk's project is just as
+        # stale.
+        sirius.close_project()
 
     run = SiriusRun(
         extract_id=request.extract_id,

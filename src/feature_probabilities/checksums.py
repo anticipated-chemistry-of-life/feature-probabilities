@@ -54,9 +54,30 @@ def import_params_checksum(params: ToDictConvertible | None) -> str | None:
     return _canonical_json_checksum(params.to_dict())
 
 
+#: `JobSubmission` keys that control *whether* SIRIUS redoes work rather than
+#: *what* it computes, and so must not take part in a run's identity.
+#: `recompute` is set from every SIRIUS-touching CLI's `--force` flag: leaving
+#: it in the checksum meant a forced run's `sirius_runs` row could never be
+#: found again by a normal run, so one `--force` made every later invocation
+#: recompute from scratch and append a duplicate set of feature/annotation
+#: rows.
+_NON_IDENTIFYING_ANALYSIS_KEYS = frozenset({"recompute"})
+
+
 def analysis_params_checksum(params: ToDictConvertible) -> str:
-    """Sha256 hex digest of a ``JobSubmission``-shaped object."""
-    return _canonical_json_checksum(params.to_dict())
+    """Sha256 hex digest of a ``JobSubmission``-shaped object.
+
+    Excludes :data:`_NON_IDENTIFYING_ANALYSIS_KEYS`, so two submissions that
+    differ only in `recompute` -- which produce identical results -- share one
+    cache identity.
+    """
+    return _canonical_json_checksum(
+        {
+            key: value
+            for key, value in params.to_dict().items()
+            if key not in _NON_IDENTIFYING_ANALYSIS_KEYS
+        }
+    )
 
 
 def _canonical_json_checksum(payload: dict[str, JSONValue]) -> str:

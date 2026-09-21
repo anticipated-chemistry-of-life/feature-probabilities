@@ -182,7 +182,12 @@ class Annotation(Base):
     rank: Mapped[int] = mapped_column(sa.Integer)
     csi_score: Mapped[float] = mapped_column(sa.Double)
     tanimoto_similarity: Mapped[float] = mapped_column(sa.Double)
-    mces_dist_to_top_hit: Mapped[float] = mapped_column(sa.Double)
+    #: Only populated when SIRIUS actually computed an MCES distance for the
+    #: candidate: a plain CSI:FingerID structure database search leaves it
+    #: unset (`tests/test_sirius_qtof_integration.py` observes `None` here
+    #: against a real SIRIUS 6.3.3 run), and no endpoint opt-field requests
+    #: it -- `StructureCandidateOptField` has no MCES member.
+    mces_dist_to_top_hit: Mapped[float | None] = mapped_column(sa.Double)
     xlogp: Mapped[float] = mapped_column(sa.Double)
     adduct: Mapped[str] = mapped_column(sa.String)
     formula_id: Mapped[str] = mapped_column(sa.String)

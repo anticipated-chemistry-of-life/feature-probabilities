@@ -13,6 +13,7 @@ from feature_probabilities.massspecgym import (
     UNKNOWN_INSTRUMENT_TYPE,
     MassSpecGymParseError,
     chunk_massspecgym_for_sirius,
+    parse_massspecgym_spectra,
 )
 
 
@@ -24,6 +25,7 @@ def _row(
     intensities: str = "10.0,20.0,30.0",
     precursor_mz: str = "151.0",
     collision_energy: str = "30",
+    adduct: str = "[M+H]+",
 ) -> dict[str, str]:
     return {
         "identifier": identifier,
@@ -35,7 +37,7 @@ def _row(
         "precursor_formula": "C2H7O",
         "parent_mass": "150.0",
         "precursor_mz": precursor_mz,
-        "adduct": "[M+H]+",
+        "adduct": adduct,
         "instrument_type": instrument_type,
         "collision_energy": collision_energy,
         "fold": "train",
@@ -111,15 +113,64 @@ def test_every_spectrum_carries_charge_pepmass_and_feature_identifier(tmp_path: 
     assert re.search(r"^FEATURE_ID=msg-42$", block, re.MULTILINE)
 
 
-def test_formula_and_precursor_formula_are_cleared_before_writing(tmp_path: Path) -> None:
+def test_no_ground_truth_field_reaches_the_written_chunk(tmp_path: Path) -> None:
+    """SIRIUS must not be told the answer it is being measured against.
+
+    Measured against real SIRIUS 6.3.3: leaving `SMILES`/`INCHIKEY` in the
+    MGF moved top-1 accuracy from 55% to 68%, and supplying `ADDUCT` (never
+    known for a field mzML run) changed 25% of top-1 candidates.
+    """
     tsv_path = _write_tsv(tmp_path, [_row("msg-1")])
     output_dir = tmp_path / "chunks"
 
     chunk_paths = chunk_massspecgym_for_sirius(tsv_path, output_dir)
 
     block = _mgf_blocks(chunk_paths["Orbitrap"][0])[0]
-    assert "FORMULA=" not in block
-    assert "PRECURSOR_FORMULA=" not in block
+    for leaked_field in (
+        "SMILES=",
+        "INCHIKEY=",
+        "FORMULA=",
+        "PRECURSOR_FORMULA=",
+        "PARENT_MASS=",
+        "ADDUCT=",
+        "FOLD=",
+        "SIMULATION_CHALLENGE=",
+    ):
+        assert leaked_field not in block
+
+
+def test_the_parsed_spectrum_still_carries_the_truth_the_chunk_omits(
+    tmp_path: Path,
+) -> None:
+    """Stripping the MGF must not strip the ground-truth map's own source.
+
+    `cli_generate_groundtruth` builds its `identifier` -> `true_inchikey`
+    map from the parsed spectra, so the truth has to survive in memory even
+    though it never reaches a file SIRIUS reads.
+    """
+    tsv_path = _write_tsv(tmp_path, [_row("msg-1")])
+
+    spectra = parse_massspecgym_spectra(tsv_path)
+
+    assert spectra[0].get("inchikey") == "LFQSCWFLJHTTHZ-UHFFFAOYSA-N"
+    assert spectra[0].get("smiles")
+
+
+@pytest.mark.parametrize("adduct", ["[M-H]-", "[M+2H]2+", "[M+H]2+"])
+def test_non_singly_charged_positive_adduct_raises_clear_error(
+    tmp_path: Path, adduct: str
+) -> None:
+    """Every spectrum is written `CHARGE=1+` and recorded as positive-mode.
+
+    That is true of all 231,104 rows in the pinned revision, but a
+    `massspecgym_revision` bump could introduce negative-mode or
+    multiply-charged rows, which would otherwise be persisted under those
+    wrong fixed values with no error at all.
+    """
+    tsv_path = _write_tsv(tmp_path, [_row("msg-1", adduct=adduct)])
+
+    with pytest.raises(MassSpecGymParseError, match="singly-charged positive"):
+        chunk_massspecgym_for_sirius(tsv_path, tmp_path / "chunks")
 
 
 def test_present_collision_energy_is_written(tmp_path: Path) -> None:

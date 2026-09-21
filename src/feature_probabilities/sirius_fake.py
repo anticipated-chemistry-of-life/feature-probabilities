@@ -119,6 +119,9 @@ class FakeSirius:
     )
     #: Every `JobSubmission` passed to `run`, in order.
     run_calls: list[JobSubmission] = field(default_factory=list, init=False)
+    #: Number of `close_project` calls, so a test can assert a batch closed
+    #: every project it created without inspecting any other state.
+    close_project_calls: int = field(default=0, init=False)
 
     _current_spectra_file: Path | None = field(default=None, init=False, repr=False)
     _has_project: bool = field(default=False, init=False, repr=False)
@@ -131,6 +134,11 @@ class FakeSirius:
     ) -> None:
         self.create_project_calls.append((Path(project_path), project_name))
         self._has_project = True
+        self._current_spectra_file = None
+
+    def close_project(self) -> None:
+        self.close_project_calls += 1
+        self._has_project = False
         self._current_spectra_file = None
 
     def import_spectra(

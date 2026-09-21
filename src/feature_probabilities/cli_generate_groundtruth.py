@@ -34,6 +34,7 @@ through unchanged onto ``AlignedFeature.external_feature_id``.
 from __future__ import annotations
 
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -41,6 +42,7 @@ from typing import TYPE_CHECKING
 import click
 import PySirius
 from PySirius import JobSubmission
+from PySirius.models.instrument_profile import InstrumentProfile
 from sqlalchemy.orm import Session
 
 from feature_probabilities.config import (
@@ -50,6 +52,7 @@ from feature_probabilities.config import (
     load_config,
 )
 from feature_probabilities.massspecgym import (
+    UNKNOWN_INSTRUMENT_TYPE,
     MassSpecGymFetchError,
     MassSpecGymParseError,
     fetch_massspecgym_tsv,
@@ -124,7 +127,52 @@ class GroundtruthSummary:
     cache_hits: int
     features_seen: int
     annotations_seen: int
+    #: Spectra dropped before chunking because MassSpecGym left their
+    #: `instrument_type` blank, so no `InstrumentProfile` can be justified
+    #: for them (`_analysis_params`). Reported rather than silently
+    #: discarded: 5,223 of the pinned revision's 231,104 rows are blank.
+    spectra_skipped: int = 0
     failures: tuple[ChunkFailure, ...] = ()
+
+
+#: `instrument_type` -> the SIRIUS `AlgorithmProfile` its spectra must be
+#: analysed under. Total over the instrument types this pipeline processes,
+#: since blank-`instrument_type` spectra are skipped before chunking.
+_INSTRUMENT_PROFILES = {
+    "QTOF": InstrumentProfile.QTOF,
+    "Orbitrap": InstrumentProfile.ORBITRAP,
+}
+
+
+def _analysis_params(
+    config: Config, *, instrument_type: str, force: bool
+) -> JobSubmission:
+    """The config's analysis parameters, profiled for `instrument_type`.
+
+    `config.toml` deliberately carries no `formula_id_params.profile`: one
+    global value would be applied to every chunk, silently analysing
+    Orbitrap spectra under a QTOF mass-accuracy model (or vice versa) on any
+    `--instrument-type all` run. The profile is therefore derived here from
+    the chunk's own instrument type, which also makes the two instrument
+    types' `analysis_params_checksum`s differ -- correct, since those runs
+    are not interchangeable.
+
+    Raises:
+        RunCacheError: `instrument_type` has no SIRIUS profile. Unreachable
+            via `generate_groundtruth`, which skips such spectra.
+    """
+    profile = _INSTRUMENT_PROFILES.get(instrument_type)
+    if profile is None:
+        raise RunCacheError(
+            f"No SIRIUS instrument profile for instrument type "
+            f"{instrument_type!r}; expected one of "
+            f"{sorted(_INSTRUMENT_PROFILES)}."
+        )
+    params = deepcopy(config.sirius.analysis_params)
+    formula_id_params = dict(params.get("formula_id_params") or {})
+    formula_id_params["profile"] = profile.value
+    params["formula_id_params"] = formula_id_params
+    return JobSubmission(**{**params, "recompute": force})
 
 
 def _true_inchikey_by_identifier(spectra: Sequence[Spectrum]) -> dict[str, str]:
@@ -183,12 +231,16 @@ def generate_groundtruth(
             for spectrum in spectra
             if spectrum_instrument_type(spectrum) == instrument_type
         ]
+    kept = [
+        spectrum
+        for spectrum in spectra
+        if spectrum_instrument_type(spectrum) != UNKNOWN_INSTRUMENT_TYPE
+    ]
+    spectra_skipped = len(spectra) - len(kept)
+    spectra = kept
+
     true_inchikey_by_identifier = _true_inchikey_by_identifier(spectra)
     chunk_paths_by_instrument_type = write_sirius_chunks(spectra, work_dir / "chunks")
-
-    analysis_params = JobSubmission(
-        **{**config.sirius.analysis_params, "recompute": force}
-    )
 
     chunks_processed = 0
     cache_hits = 0
@@ -196,6 +248,9 @@ def generate_groundtruth(
     annotations_seen = 0
     failures: list[ChunkFailure] = []
     for chunk_instrument_type, chunk_paths in chunk_paths_by_instrument_type.items():
+        analysis_params = _analysis_params(
+            config, instrument_type=chunk_instrument_type, force=force
+        )
         for chunk_path in chunk_paths:
             request = SiriusRunRequest(
                 input_file=chunk_path,
@@ -239,6 +294,7 @@ def generate_groundtruth(
         cache_hits=cache_hits,
         features_seen=features_seen,
         annotations_seen=annotations_seen,
+        spectra_skipped=spectra_skipped,
         failures=tuple(failures),
     )
 
@@ -253,6 +309,12 @@ def _format_summary(summary: GroundtruthSummary) -> str:
             "annotation(s)."
         )
     ]
+    if summary.spectra_skipped:
+        lines.append(
+            f"Skipped {summary.spectra_skipped} spectrum(s) with no "
+            "instrument_type on record: no SIRIUS instrument profile can be "
+            "justified for them."
+        )
     if summary.failures:
         lines.append(f"{len(summary.failures)} chunk(s) FAILED:")
         lines.extend(

@@ -20,10 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from feature_probabilities.cli_generate_groundtruth import main
-from feature_probabilities.massspecgym import (
-    MASSSPECGYM_COLUMNS,
-    UNKNOWN_INSTRUMENT_TYPE,
-)
+from feature_probabilities.massspecgym import MASSSPECGYM_COLUMNS
 from feature_probabilities.schema import (
     SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
     Annotation,
@@ -390,11 +387,24 @@ def test_rerun_after_partial_failure_only_reprocesses_the_failed_chunk(
         assert {run.instrument_type for run in runs} == {"Orbitrap", "QTOF"}
 
 
-def test_blank_instrument_type_rows_are_processed_under_the_default_all_filter(
+def test_blank_instrument_type_rows_are_skipped_and_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tsv_path = _write_tsv(tmp_path, [_row("msg-1", instrument_type="")])
-    fake = _fake_sirius_for("msg-1", "AAAAAAAAAAAAAA")
+    """A row with no instrument type has no defensible SIRIUS profile.
+
+    5,223 of the pinned revision's 231,104 rows leave `instrument_type`
+    blank; analysing them under a guessed `AlgorithmProfile` would put
+    unattributable rows into the calibration set, so they are dropped before
+    chunking and the drop is reported rather than silent.
+    """
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-unknown", instrument_type=""),
+            _row("msg-qtof", instrument_type="QTOF"),
+        ],
+    )
+    fake = _fake_sirius_for("msg-qtof", "AAAAAAAAAAAAAA")
     _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
 
     db_path = tmp_path / "db" / "database.duckdb"
@@ -403,12 +413,78 @@ def test_blank_instrument_type_rows_are_processed_under_the_default_all_filter(
     result = CliRunner().invoke(main, ["--config", str(config_path)])
 
     assert result.exit_code == 0, result.output
+    assert "Skipped 1 spectrum(s) with no instrument_type" in result.output
     assert len(fake.import_spectra_calls) == 1
 
     with _open_db(db_path) as session:
         runs = session.scalars(select(SiriusRun)).all()
         assert len(runs) == 1
-        assert runs[0].instrument_type == UNKNOWN_INSTRUMENT_TYPE
+        assert runs[0].instrument_type == "QTOF"
+
+
+def test_each_chunk_is_analysed_under_its_own_instrument_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SIRIUS `AlgorithmProfile` must follow the chunk's instrument type.
+
+    `config.toml` carries no `profile`, so one global value can never be
+    applied to the wrong instrument type -- an `--instrument-type all` run
+    would otherwise analyse Orbitrap spectra under a QTOF mass-accuracy
+    model.
+    """
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-qtof", instrument_type="QTOF"),
+            _row("msg-orbitrap", instrument_type="Orbitrap"),
+        ],
+    )
+    fake = _fake_sirius_for("msg-qtof", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+
+    result = CliRunner().invoke(main, ["--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    with _open_db(db_path) as session:
+        runs = session.scalars(select(SiriusRun)).all()
+        profile_by_instrument_type = {
+            run.instrument_type: submission.formula_id_params.profile.value
+            for run, submission in zip(
+                sorted(runs, key=lambda run: run.run_id), fake.run_calls, strict=True
+            )
+        }
+    assert profile_by_instrument_type == {"QTOF": "QTOF", "Orbitrap": "ORBITRAP"}
+
+
+def test_every_chunks_project_is_closed_after_its_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unclosed project stays registered in the SIRIUS instance forever.
+
+    One project per chunk is created under a temporary directory that is
+    deleted when the CLI exits; without closing, each run leaves a stale
+    entry holding its database open in a long-lived SIRIUS instance.
+    """
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-qtof", instrument_type="QTOF"),
+            _row("msg-orbitrap", instrument_type="Orbitrap"),
+        ],
+    )
+    fake = _fake_sirius_for("msg-qtof", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    result = CliRunner().invoke(
+        main, ["--config", str(_write_config(tmp_path, tmp_path / "db.duckdb"))]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(fake.create_project_calls) == 2
+    assert fake.close_project_calls == 2
 
 
 def test_blank_instrument_type_rows_are_excluded_by_a_specific_instrument_type_filter(

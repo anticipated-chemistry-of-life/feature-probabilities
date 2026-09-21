@@ -117,8 +117,11 @@ class SiriusInterface(Protocol):
     ) -> None:
         """Create a SIRIUS project-space at `project_path` and make it current.
 
-        `project_name` defaults to `project_path.stem`. Every other method on
-        this Protocol operates on whichever project was created most recently.
+        `project_name` defaults to `project_path.stem`. Any missing parent
+        directory of `project_path` is created first -- SIRIUS' Nitrite store
+        refuses to open a project file whose containing directory doesn't
+        exist. Every other method on this Protocol operates on whichever
+        project was created most recently.
         """
         ...
 
@@ -159,6 +162,18 @@ class SiriusInterface(Protocol):
         """
         ...
 
+    def close_project(self) -> None:
+        """Close the current project, releasing it from the SIRIUS instance.
+
+        A project stays registered in the running SIRIUS instance -- holding
+        its Nitrite database open -- until it is closed, even after the
+        directory it lives in is deleted. A batch that creates one project
+        per chunk and never closes any accumulates them for the lifetime of
+        the instance, so every caller closes what it created. Calling this
+        without a current project is a no-op, so it is safe in a `finally`.
+        """
+        ...
+
 
 def require_matching_sirius_version(
     sirius: SiriusInterface, required_version: str
@@ -191,8 +206,8 @@ def _credentials_from_env() -> AccountCredentials:
 class Sirius:
     """Orchestrates a real, locally-running SIRIUS desktop application via PySirius.
 
-    Attaches to (or starts) SIRIUS and logs in immediately on construction,
-    mirroring `metabolite_annotator`'s `Sirius` wrapper. Implements
+    Attaches to (or starts) SIRIUS on construction and ensures it is logged
+    in, mirroring `metabolite_annotator`'s `Sirius` wrapper. Implements
     `SiriusInterface`; use `sirius_fake.FakeSirius` instead of this class in
     every automated test, since SIRIUS requires a licensed, locally-installed
     desktop app unavailable in CI.
@@ -206,7 +221,15 @@ class Sirius:
             raise SiriusStartupError("Failed to attach to or start a SIRIUS instance.")
         self._sdk = sdk
         self._api: PySiriusAPI = api
-        self._api.account().login(True, _credentials_from_env())
+        account = self._api.account()
+        # An attached instance is usually already logged in (SIRIUS keeps a
+        # refresh token), and every login is a live OAuth round-trip through
+        # SIRIUS' auth service -- one that has been observed to fail the whole
+        # run with `500 ACTION_ERROR_TIMEOUT: Action execution timed out`.
+        # Constructing this class is therefore idempotent with respect to
+        # login rather than re-authenticating a session that already works.
+        if not account.is_logged_in():
+            account.login(True, _credentials_from_env())
         self._project_info: ProjectInfo | None = None
 
     def get_version(self) -> str:
@@ -221,8 +244,10 @@ class Sirius:
         self, project_path: Path, project_name: str | None = None
     ) -> None:
         name = project_name or project_path.stem
+        resolved = project_path.resolve()
+        resolved.parent.mkdir(parents=True, exist_ok=True)
         self._project_info = self._api.projects().create_project(
-            project_id=name, path_to_project=str(project_path.resolve())
+            project_id=name, path_to_project=str(resolved)
         )
 
     def import_spectra(
@@ -262,6 +287,12 @@ class Sirius:
                 for candidate in candidates
             )
         return rows
+
+    def close_project(self) -> None:
+        if self._project_info is None:
+            return
+        self._api.projects().close_project(self._project_info.project_id)
+        self._project_info = None
 
     def _require_project_id(self) -> str:
         if self._project_info is None:

@@ -115,29 +115,75 @@ MASSSPECGYM_COLUMNS = (
     "simulation_challenge",
 )
 
-#: Non-array columns carried through to each spectrum's metadata and
-#: exported as MGF fields -- every value is required and non-blank, per
-#: acceptance criterion 4 ("malformed or missing required fields ... produce
-#: a clear error rather than a silently malformed chunk"), except the
-#: columns in `_OPTIONAL_METADATA_COLUMNS`.
-#:
-#: `collision_energy` and `instrument_type` are optional per row: real
-#: MassSpecGym rows legitimately leave either blank (no recorded collision
-#: energy; no instrument type on record for that spectrum), so a blank
-#: value there is carried through as an absent MGF field rather than a
-#: parse error. A blank `instrument_type` is grouped under
-#: `UNKNOWN_INSTRUMENT_TYPE` by `spectrum_instrument_type` -- see that
-#: function for how `--instrument-type` filtering treats it.
+#: Columns that are legitimately blank on real MassSpecGym rows (no recorded
+#: collision energy; no instrument type on record), so a blank value is
+#: carried through as an absent metadata key rather than a parse error. A
+#: blank `instrument_type` is reported as `UNKNOWN_INSTRUMENT_TYPE` by
+#: `spectrum_instrument_type`.
 _OPTIONAL_METADATA_COLUMNS = ("collision_energy", "instrument_type")
+
+#: Non-array columns carried through to each parsed spectrum's in-memory
+#: metadata. Every value is required and non-blank (acceptance criterion 4:
+#: "malformed or missing required fields ... produce a clear error rather
+#: than a silently malformed chunk") except `_OPTIONAL_METADATA_COLUMNS`.
+#: This is the full ground truth, including `smiles`/`inchikey`, which
+#: `cli_generate_groundtruth._true_inchikey_by_identifier` reads to build its
+#: `identifier` -> known-true-structure map. What SIRIUS is allowed to see is
+#: a separate, narrower question -- see `_EXPORTED_MGF_FIELDS`.
 _METADATA_COLUMNS = tuple(
     column
     for column in MASSSPECGYM_COLUMNS
     if column not in ("mzs", "intensities", *_OPTIONAL_METADATA_COLUMNS)
 )
 
-#: `ms2mol-evaluation`'s existing per-chunk spectra cap for SIRIUS's
-#: pre-picked import path.
-DEFAULT_SIRIUS_CHUNK_SIZE = 30_000
+#: Metadata keys `write_sirius_chunks` writes into an MGF chunk. Deliberately
+#: an allow-list, not "everything the parser kept": a ground-truth spectrum
+#: must reach SIRIUS carrying only what a *measured* spectrum carries, or the
+#: ground truth measures a SIRIUS that was told the answer.
+#:
+#: Measured against real SIRIUS 6.3.3 runs over 25 QTOF spectra: leaving
+#: `smiles`/`inchikey` in the MGF moved top-1 accuracy from 55% to 68% and
+#: changed 4 of 20 top-ranked candidates, while a byte-identical rerun and a
+#: bookkeeping-fields-only strip each changed none -- SIRIUS reads those
+#: fields. Excluded, and why:
+#:
+#: - `smiles`, `inchikey`: the answer itself.
+#: - `formula`, `precursor_formula`: the answer's formula (also blanked by
+#:   `_add_required_metadata_for_sirius`).
+#: - `parent_mass`: neutral mass derived from the true formula, and it
+#:   disagrees with `precursor_mz` by ~0.02 Da on some rows, which SIRIUS
+#:   reports as `PrecursorIonType is inconsistent with the data`.
+#: - `adduct`: stated per row by MassSpecGym, never known for a field mzML
+#:   run (SIRIUS detects it). Supplying it changed 25% of top-1 candidates
+#:   at no measurable accuracy gain, so keeping it would calibrate against
+#:   conditions field runs cannot reproduce.
+#: - `fold`, `simulation_challenge`: dataset bookkeeping, measured inert.
+#:
+#: What remains is instrument-side fact a measured spectrum also carries,
+#: plus the fields SIRIUS's pre-picked import path requires
+#: (`_add_required_metadata_for_sirius`) -- including `feature_id`, which
+#: comes back as `AlignedFeature.external_feature_id` and is how a run's
+#: features are joined to their known-true structures.
+_EXPORTED_MGF_FIELDS = frozenset(
+    {
+        "feature_id",
+        "identifier",
+        "pepmass",
+        "precursor_mz",
+        "charge",
+        "ms_level",
+        "collision_energy",
+        "instrument_type",
+    }
+)
+
+#: Per-chunk spectra cap for SIRIUS's pre-picked import path. One chunk is
+#: the unit of both SIRIUS work and cache reuse (`run_cache`), and
+#: `generate_groundtruth` commits per chunk, so the chunk size is the
+#: checkpoint granularity: at a measured 0.81 s/spectrum, 1,000 spectra is
+#: ~13 min of recomputable work per failure, against ~6.7 h for the 30,000
+#: `ms2mol-evaluation` originally used.
+DEFAULT_SIRIUS_CHUNK_SIZE = 1_000
 
 
 class MassSpecGymParseError(Exception):
@@ -191,6 +237,39 @@ def _parse_peak_array(row: pd.Series, field_name: str, *, identifier: str) -> np
         ) from exc
 
 
+#: A singly-charged positive adduct, e.g. `[M+H]+` or `[M+Na]+`: a `]`
+#: immediately followed by the closing `+`. `[M+H]2+` and `[M-H]-` both fail.
+_SINGLY_CHARGED_POSITIVE_ADDUCT = re.compile(r"\]\+$")
+
+
+def _require_positive_adduct(row: pd.Series, *, identifier: str) -> str:
+    """`row`'s adduct, rejecting anything not singly-charged positive.
+
+    Every one of the 231,104 rows in the pinned MassSpecGym revision is
+    positive-mode (`[M+H]+` or `[M+Na]+`), which is what lets
+    `_add_required_metadata_for_sirius` write a fixed `CHARGE=1+` and
+    `cli_generate_groundtruth` record a fixed `ionization_mode='positive'`.
+    Bumping `massspecgym_revision` to a release containing negative-mode or
+    multiply-charged spectra would otherwise persist them under those wrong
+    fixed values with no error at all, so the assumption fails loudly here
+    instead of corrupting ground truth silently.
+
+    Raises:
+        MassSpecGymParseError: `row`'s adduct is blank, negative-mode, or
+            multiply charged.
+    """
+    adduct = _require_value(row, "adduct", identifier=identifier)
+    if not _SINGLY_CHARGED_POSITIVE_ADDUCT.search(adduct.strip()):
+        raise MassSpecGymParseError(
+            f"Row {identifier!r} has adduct {adduct!r}, which is not a "
+            "singly-charged positive adduct. This pipeline writes a fixed "
+            "CHARGE=1+ and records ionization_mode='positive' for every "
+            "ground-truth spectrum; supporting this row means deriving "
+            "charge and polarity per spectrum instead."
+        )
+    return adduct
+
+
 def _add_required_metadata_for_sirius(
     spectrum: Spectrum, *, identifier: str, precursor_mz: float
 ) -> None:
@@ -205,7 +284,8 @@ def _add_required_metadata_for_sirius(
     spectrum.set("formula", None)
     spectrum.set("precursor_formula", None)
     spectrum.set("feature_id", identifier)
-    # Only positive-mode adducts exist in the current MassSpecGym release.
+    # Safe because `_require_positive_adduct` rejects every row this would
+    # mislabel.
     spectrum.set("charge", "1+")
     spectrum.set("pepmass", precursor_mz)
 
@@ -222,6 +302,8 @@ def _row_to_spectrum(row: pd.Series) -> Spectrum:
     order = np.argsort(mzs, kind="stable")
     mzs = mzs[order]
     intensities = intensities[order]
+
+    _require_positive_adduct(row, identifier=identifier)
 
     metadata: dict[str, str] = {
         column: _require_value(row, column, identifier=identifier)
@@ -291,6 +373,26 @@ def _instrument_type_slug(instrument_type: str) -> str:
     return slug or "unknown"
 
 
+def _for_export(spectrum: Spectrum) -> Spectrum:
+    """`spectrum` with only `_EXPORTED_MGF_FIELDS` in its metadata.
+
+    The parsed spectrum deliberately carries the full MassSpecGym row,
+    including the true structure, so callers can build their ground-truth
+    map from it; this is the single point where that ground truth is kept
+    from reaching SIRIUS.
+    """
+    return Spectrum(
+        mz=spectrum.peaks.mz,
+        intensities=spectrum.peaks.intensities,
+        metadata={
+            key: value
+            for key, value in spectrum.metadata.items()
+            if key in _EXPORTED_MGF_FIELDS
+        },
+        metadata_harmonization=False,
+    )
+
+
 def write_sirius_chunks(
     spectra: Sequence[Spectrum],
     output_dir: Path,
@@ -303,9 +405,11 @@ def write_sirius_chunks(
     file paths, with exactly one key per instrument type present in
     `spectra` -- plus `UNKNOWN_INSTRUMENT_TYPE` when any spectrum left the
     column blank. A group larger than `chunk_size` is split across multiple
-    files rather than written as one oversized file, matching
-    `ms2mol-evaluation`'s existing 30,000-spectra-per-chunk pattern
-    generalized across every instrument type.
+    files rather than written as one oversized file.
+
+    Each written spectrum carries only `_EXPORTED_MGF_FIELDS`: the true
+    structure a parsed spectrum holds in memory is never written into a file
+    SIRIUS reads.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     grouped: dict[str, list[Spectrum]] = {}
@@ -320,7 +424,7 @@ def write_sirius_chunks(
         for chunk_number, start in enumerate(range(0, len(group), chunk_size)):
             chunk = group[start : start + chunk_size]
             path = output_dir / f"{slug}_{chunk_number}.mgf"
-            save_as_mgf(chunk, str(path), file_mode="w")
+            save_as_mgf([_for_export(s) for s in chunk], str(path), file_mode="w")
             paths.append(path)
         chunk_paths[instrument_type] = paths
     return chunk_paths

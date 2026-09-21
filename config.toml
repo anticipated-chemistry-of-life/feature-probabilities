@@ -11,7 +11,7 @@ db_path = "db/database.duckdb"
 # Installed SIRIUS version the SIRIUS-touching executables require; a
 # mismatch fails fast before any SIRIUS call is made. Bump deliberately when
 # upgrading the pipeline to a newer SIRIUS release.
-required_sirius_version = "6.3.12"
+required_sirius_version = "6.3.3"
 
 # Pinned MassSpecGym v1.5 HuggingFace dataset revision (commit SHA) that
 # generate-groundtruth fetches by default. See issue #13 for how this is
@@ -23,9 +23,90 @@ massspecgym_revision = "d2e86d0c3bd905a6d578c0dd6053ed2bd41f9c2a"
 kde_output_path = "models/kde_model.pkl"
 
 [sirius.analysis_params]
-# Default SIRIUS JobSubmission analysis parameters, applied to every SIRIUS
-# run unless a CLI flag overrides a specific key. Populated as the SIRIUS
-# wrapper (issue #15) settles on the fields it needs.
+# SIRIUS `JobSubmission` analysis parameters, sent verbatim with every run of
+# every SIRIUS-touching executable. Seeded from SIRIUS 6.3.3's own
+# `GET /api/default-job-config` so a run is reproducible from this versioned
+# file rather than from whatever defaults the installed SIRIUS happens to
+# carry. Only parameters that affect a result are pinned here; the tools we
+# do not run carry `enabled = false` and no parameter payload.
+#
+# `recompute` is deliberately absent: it is a control flag set from `--force`,
+# not an analysis parameter, and `checksums.analysis_params_checksum` excludes
+# it so forcing a rerun cannot fork the cache.
+#
+# Adduct settings are SIRIUS's defaults verbatim, negative-mode entries
+# included, even though the pinned MassSpecGym revision is 100% positive-mode:
+# `annotate` shares this section for field mzML runs, whose polarity is not
+# known in advance.
+fallback_adducts = ["[M - H]-", "[M + K]+", "[M + H]+", "[M + Na]+"]
+enforced_adducts = []
+detectable_adducts = [
+    "[M - CH2O3 - H]-", "[M + CH2O2 + H]+", "[M - CH3 - H]-",
+    "[M + C2H3N + H]+", "[M - H2O + H]+", "[M - CO2 - H]-", "[2M + Cl]-",
+    "[2M + H]+", "[M + H2O - H]-", "[M + H]+", "[M + Na]+", "[M + Cl]-",
+    "[2M + Na]+", "[M + CH2O2 - H]-", "[M - H + Na - H]-",
+    "[M + C2H4O2 - H]-", "[2M + H]-", "[M - H2O - H]-", "[M - H]-",
+    "[M - H3N - H]-", "[M + K]+", "[2M + K]+", "[M + H3N + H]+",
+    "[M + Br]-", "[2M + Br]-", "[M - H4O2 + H]+",
+]
+
+# SIRIUS molecular formula identification. `profile` is deliberately absent:
+# the instrument profile is derived per chunk from the chunk's own
+# `instrument_type` (`cli_generate_groundtruth._instrument_profile`), so a
+# value here could only ever disagree with the data it is applied to.
+[sirius.analysis_params.formula_id_params]
+enabled = true
+number_of_candidates = 10
+number_of_candidates_per_ionization = 1
+mass_accuracy_ms2ppm = 10.0
+isotope_ms2_settings = "IGNORE"
+filter_by_isotope_pattern = true
+enforce_el_gordo_formula = true
+perform_bottom_up_search = true
+perform_denovo_below_mz = 400.0
+apply_formula_constraints_to_db_and_bottom_up_search = false
+enforced_formula_constraints = "HCNOP"
+fallback_formula_constraints = "S"
+detectable_elements = ["B", "Mg", "S", "Cl", "Fe", "Zn", "Se", "Br"]
+inject_spec_lib_match_formulas = true
+min_score_to_inject_spec_lib_match = 0.7
+min_peaks_to_inject_spec_lib_match = 6
+
+[sirius.analysis_params.formula_id_params.use_heuristic]
+use_heuristic_above_mz = 300
+use_only_heuristic_above_mz = 650
+
+# CSI:FingerID fingerprint prediction.
+[sirius.analysis_params.fingerprint_prediction_params]
+enabled = true
+use_score_threshold = true
+always_predict_high_ref_matches = true
+
+# CANOPUS compound-class prediction. Enabled not because the classes are
+# consumed, but because SIRIUS 6.3.3's CLI parser only accepts the
+# `structures` subcommand after `classes`: dropping it makes every job
+# submission fail with `400 Cannot create Job Command!`.
+[sirius.analysis_params.canopus_params]
+enabled = true
+
+# CSI:FingerID structure database search. `BIO` (the aggregate biological
+# database) is the single search space shared by ground-truth and field runs
+# -- a KDE calibrated against one search space is not valid for another.
+[sirius.analysis_params.structure_db_search_params]
+enabled = true
+structure_search_dbs = ["BIO"]
+tag_structures_with_lipid_class = true
+expansive_search_confidence_mode = "APPROXIMATE"
+
+# Tools this pipeline does not run.
+[sirius.analysis_params.spectra_search_params]
+enabled = false
+
+[sirius.analysis_params.zodiac_params]
+enabled = false
+
+[sirius.analysis_params.ms_novelist_params]
+enabled = false
 
 [sirius.import_params]
 # Default SIRIUS LcmsSubmissionParameters for mzML peak-picking import.

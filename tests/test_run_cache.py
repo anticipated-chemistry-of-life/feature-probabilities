@@ -27,6 +27,7 @@ from feature_probabilities.run_cache import (
 )
 from feature_probabilities.schema import (
     SOURCE_KIND_FIELD_MZML,
+    Feature,
     Molecule,
     SiriusRun,
     create_database,
@@ -206,13 +207,21 @@ def test_changing_analysis_params_checksum_forces_a_new_coexisting_run(
     engine = create_database(":memory:")
     with Session(engine) as session:
         request_a = _request(
-            tmp_path, input_file, analysis_params=JobSubmission(recompute=False)
+            tmp_path,
+            input_file,
+            analysis_params=JobSubmission(
+                formula_id_params={"enabled": True, "number_of_candidates": 10}
+            ),
         )
         first = get_or_create_run(session, fake, request_a)
         session.commit()
 
         request_b = _request(
-            tmp_path, input_file, analysis_params=JobSubmission(recompute=True)
+            tmp_path,
+            input_file,
+            analysis_params=JobSubmission(
+                formula_id_params={"enabled": True, "number_of_candidates": 25}
+            ),
         )
         second = get_or_create_run(session, fake, request_b)
         session.commit()
@@ -220,6 +229,38 @@ def test_changing_analysis_params_checksum_forces_a_new_coexisting_run(
         assert len(fake.run_calls) == 2
         assert second.from_cache is False
         assert second.run.run_id != first.run.run_id
+
+
+def test_a_forced_reruns_row_is_still_found_by_a_later_unforced_run(
+    tmp_path: Path,
+) -> None:
+    """`recompute` must not fork the cache.
+
+    It is set from `--force` and controls whether SIRIUS redoes work, not
+    what it computes, so a forced run's row has to stay reachable -- else
+    one `--force` makes every later invocation recompute from scratch and
+    append a duplicate set of feature/annotation rows.
+    """
+    input_file = _write_input_file(tmp_path)
+    fake = _fake_for(input_file)
+    engine = create_database(":memory:")
+    with Session(engine) as session:
+        forced = _request(
+            tmp_path, input_file, analysis_params=JobSubmission(recompute=True)
+        )
+        first = get_or_create_run(session, fake, forced, force=True)
+        session.commit()
+
+        unforced = _request(
+            tmp_path, input_file, analysis_params=JobSubmission(recompute=False)
+        )
+        second = get_or_create_run(session, fake, unforced)
+        session.commit()
+
+        assert second.from_cache is True
+        assert second.run.run_id == first.run.run_id
+        assert len(fake.run_calls) == 1
+        assert len(session.scalars(select(Feature)).all()) == len(first.features)
 
 
 def test_changing_sirius_version_forces_a_new_coexisting_run(tmp_path: Path) -> None:
