@@ -394,6 +394,7 @@ def main(
                     force=force,
                     instrument_type=instrument_type,
                 )
+            sirius.shutdown()
         finally:
             engine.dispose()
     except _CLICK_EXCEPTION_ERRORS as exc:

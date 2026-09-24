@@ -294,6 +294,9 @@ class Sirius:
         self._api.projects().close_project(self._project_info.project_id)
         self._project_info = None
 
+    def shutdown(self) -> None:
+        self._sdk.shutdown_sirius()
+
     def _require_project_id(self) -> str:
         if self._project_info is None:
             raise NoActiveProjectError(NO_ACTIVE_PROJECT_MESSAGE)
