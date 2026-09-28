@@ -37,6 +37,10 @@ surface:
   processed file, with its calibration score -- to CSV or Parquet
   (selected by ``<path>``'s suffix): the literal deliverable `CONTEXT.md`'s
   Feature-probability table entry names.
+- SIRIUS is shut down after every mzML file (success or failure) and the
+  next file that needs it starts a fresh instance (`Sirius.shutdown`).
+  SIRIUS 6.5.4 retains heap per analysed feature that only a process exit
+  frees, so one long-lived instance grows without bound over a batch.
 
 ``ionization_mode``/``instrument_type`` are per-batch CLI flags rather than
 metadata-CSV columns: per ``CONTEXT.md``'s Extract entry, they're
@@ -91,6 +95,7 @@ from feature_probabilities.schema import (
 from feature_probabilities.sirius import (
     Sirius,
     SiriusCredentialsError,
+    SiriusShutdownError,
     SiriusStartupError,
     SiriusVersionMismatchError,
     SiriusVersionUnavailableError,
@@ -152,6 +157,7 @@ _CLICK_EXCEPTION_ERRORS = (
     NoKdeModelError,
     RunCacheError,
     SiriusCredentialsError,
+    SiriusShutdownError,
     SiriusStartupError,
     SiriusVersionMismatchError,
     SiriusVersionUnavailableError,
@@ -331,9 +337,11 @@ def annotate_batch(
     `commit`s `session` after every file -- on success, so an earlier
     file's work survives a later file's failure; on failure, `rollback`s
     first, then records a `FileFailure` and moves on to the next file
-    rather than aborting the whole batch. Only errors raised *before* any
-    file is processed (SIRIUS version mismatch, an unresolvable
-    `--kde-model`, a missing metadata row) propagate out of this function.
+    rather than aborting the whole batch. Either way `sirius` is shut down
+    after the file, freeing the heap SIRIUS never releases on its own. Only
+    errors raised *before* any file is processed (SIRIUS version mismatch,
+    an unresolvable `--kde-model`, a missing metadata row) or by a shutdown
+    propagate out of this function.
     If `export_path` is given, writes the feature-probability table for
     every successfully processed file once the batch finishes.
 
@@ -346,6 +354,7 @@ def annotate_batch(
             `export_path`'s extension is unsupported.
         MetadataError: `metadata_csv` is malformed, or an mzML file has no
             matching metadata row.
+        SiriusShutdownError: SIRIUS didn't exit after a file.
     """
     require_matching_sirius_version(sirius, config.required_sirius_version)
     kde_model = _resolve_kde_model(session, kde_model_path)
@@ -400,6 +409,8 @@ def annotate_batch(
             session.rollback()
             failures.append(FileFailure(mzml_path=mzml_path, error=str(exc)))
             continue
+        finally:
+            sirius.shutdown()
 
         files_processed += 1
         cache_hits += 1 if result.from_cache else 0
@@ -541,23 +552,29 @@ def main(
         engine = create_database(config.db_path)
         try:
             sirius = Sirius(headless=True)
-            with (
-                tempfile.TemporaryDirectory(prefix="annotate-") as tmp,
-                Session(engine) as session,
-            ):
-                summary = annotate_batch(
-                    session,
-                    sirius,
-                    config,
-                    mzml_dir=mzml_dir,
-                    metadata_csv=metadata_csv,
-                    work_dir=Path(tmp),
-                    ionization_mode=ionization_mode,
-                    instrument_type=instrument_type,
-                    kde_model_path=kde_model_path,
-                    force=force,
-                    export_path=export_path,
-                )
+            try:
+                with (
+                    tempfile.TemporaryDirectory(prefix="annotate-") as tmp,
+                    Session(engine) as session,
+                ):
+                    summary = annotate_batch(
+                        session,
+                        sirius,
+                        config,
+                        mzml_dir=mzml_dir,
+                        metadata_csv=metadata_csv,
+                        work_dir=Path(tmp),
+                        ionization_mode=ionization_mode,
+                        instrument_type=instrument_type,
+                        kde_model_path=kde_model_path,
+                        force=force,
+                        export_path=export_path,
+                    )
+            finally:
+                # Covers runs that end before or without a per-file
+                # shutdown (no files, a metadata/version error, Ctrl-C);
+                # a no-op when the last file already shut SIRIUS down.
+                sirius.shutdown()
         finally:
             engine.dispose()
     except _CLICK_EXCEPTION_ERRORS as exc:

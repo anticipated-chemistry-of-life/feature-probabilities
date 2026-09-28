@@ -590,6 +590,35 @@ def test_one_file_failure_is_reported_others_succeed_and_exit_is_nonzero(
         assert len(session.scalars(select(CalibrationScore)).all()) == 1
 
 
+def test_every_file_runs_on_a_fresh_sirius_instance_even_after_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIRIUS retains heap per analysed feature that only a process exit frees.
+
+    The first file fails, so a shutdown missing from the failure path would
+    leave the second file on the first file's instance.
+    """
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML", "EX-002.mzML"])
+    csv_path = _write_csv(tmp_path, TWO_EXTRACT_CSV)
+    fake = _fake_sirius_for()
+    fake.fail_on_run = {"EX-001.mzML": RuntimeError("sirius blew up")}
+    _patch_seams(monkeypatch, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_kde_model(db_path, tmp_path / "kde.pkl")
+
+    result = _invoke(config_path, mzml_dir, csv_path)
+
+    assert "EX-001.mzML" in result.output
+    assert [path.name for path, _ in fake.create_project_calls] == [
+        "EX-001",
+        "EX-002",
+    ]
+    assert fake.instances_started == 2
+    assert not fake.running
+
+
 def test_export_writes_one_csv_row_per_annotation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
