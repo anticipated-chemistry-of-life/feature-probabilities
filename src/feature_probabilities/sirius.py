@@ -1,9 +1,10 @@
 """Standalone `Sirius` wrapper: core orchestration against the raw PySirius client.
 
 Covers exactly the SIRIUS interaction itself -- attach-or-start plus login,
-project lifecycle, importing spectra (both the pre-picked and mzML/peak-
-picking paths), submitting an analysis job, and reading back structure
-candidates joined with their feature's ion mass. It deliberately does **not**
+shutdown (and lazy restart after it), project lifecycle, importing spectra
+(both the pre-picked and mzML/peak-picking paths), submitting an analysis
+job, and reading back structure candidates joined with their feature's ion
+mass. It deliberately does **not**
 know about rerun-avoidance caching or DuckDB persistence (`sirius_runs`
 cache lookups and `features`/`annotations`/`molecules` row persistence): that
 ties this wrapper together with `checksums.py` and `schema.py` in a later
@@ -23,6 +24,8 @@ research findings for why `get_structure_candidates` needs a manual join
 from __future__ import annotations
 
 import os
+import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -56,6 +59,10 @@ class SiriusCredentialsError(RuntimeError):
 
 class SiriusStartupError(RuntimeError):
     """Raised when SIRIUS can't be attached to or started."""
+
+
+class SiriusShutdownError(RuntimeError):
+    """Raised when a SIRIUS process is still alive after being told to shut down."""
 
 
 class SiriusVersionUnavailableError(RuntimeError):
@@ -97,11 +104,11 @@ class SiriusInterface(Protocol):
     """Structural contract both the real `Sirius` wrapper and `FakeSirius` satisfy.
 
     Attaching to SIRIUS and logging in happen as a side effect of
-    construction, not through a method on this Protocol -- a `FakeSirius`
-    construction makes no SIRIUS connection at all, so there is nothing to
-    protocol-ize there. Everything past construction is captured here, so
-    swapping one implementation for the other requires no caller-side code
-    changes.
+    construction, and again on the first call after `shutdown`, not through
+    a method on this Protocol -- a `FakeSirius` construction makes no SIRIUS
+    connection at all, so there is nothing to protocol-ize there. Everything
+    past construction is captured here, so swapping one implementation for
+    the other requires no caller-side code changes.
     """
 
     def get_version(self) -> str:
@@ -174,6 +181,20 @@ class SiriusInterface(Protocol):
         """
         ...
 
+    def shutdown(self) -> None:
+        """Stop the SIRIUS process and wait for it to exit, releasing its memory.
+
+        SIRIUS 6.5.4 leaks roughly 0.9 GB of heap per 1,000-spectrum chunk
+        (per-job `ParameterConfig` layers stay registered as event listeners
+        on its global default configuration), and only a process exit frees
+        it -- closing the project does not. Any current project is dropped.
+        The next call that needs SIRIUS attaches to or starts a fresh
+        instance, so a batch can shut down between inputs without rebuilding
+        its wrapper. Calling this while no instance is running is a no-op, so
+        it is safe in a `finally`.
+        """
+        ...
+
 
 def require_matching_sirius_version(
     sirius: SiriusInterface, required_version: str
@@ -207,30 +228,40 @@ class Sirius:
     """Orchestrates a real, locally-running SIRIUS desktop application via PySirius.
 
     Attaches to (or starts) SIRIUS on construction and ensures it is logged
-    in, mirroring `metabolite_annotator`'s `Sirius` wrapper. Implements
-    `SiriusInterface`; use `sirius_fake.FakeSirius` instead of this class in
-    every automated test, since SIRIUS requires a licensed, locally-installed
-    desktop app unavailable in CI.
+    in, mirroring `metabolite_annotator`'s `Sirius` wrapper. After
+    `shutdown`, the next call that needs SIRIUS repeats that attach-or-start
+    and login. Implements `SiriusInterface`; use `sirius_fake.FakeSirius`
+    instead of this class in every automated test, since SIRIUS requires a
+    licensed, locally-installed desktop app unavailable in CI.
     """
 
     def __init__(self, *, headless: bool = True) -> None:
         load_dotenv()
-        sdk = SiriusSDK()
-        api = sdk.attach_or_start_sirius(headless=headless)
+        self._headless = headless
+        self._sdk = SiriusSDK()
+        self._project_info: ProjectInfo | None = None
+        self._running_api: PySiriusAPI | None = self._connect()
+
+    @property
+    def _api(self) -> PySiriusAPI:
+        if self._running_api is None:
+            self._running_api = self._connect()
+        return self._running_api
+
+    def _connect(self) -> PySiriusAPI:
+        api = self._sdk.attach_or_start_sirius(headless=self._headless)
         if api is None:
             raise SiriusStartupError("Failed to attach to or start a SIRIUS instance.")
-        self._sdk = sdk
-        self._api: PySiriusAPI = api
-        account = self._api.account()
+        account = api.account()
         # An attached instance is usually already logged in (SIRIUS keeps a
         # refresh token), and every login is a live OAuth round-trip through
         # SIRIUS' auth service -- one that has been observed to fail the whole
         # run with `500 ACTION_ERROR_TIMEOUT: Action execution timed out`.
-        # Constructing this class is therefore idempotent with respect to
-        # login rather than re-authenticating a session that already works.
+        # Connecting is therefore idempotent with respect to login rather
+        # than re-authenticating a session that already works.
         if not account.is_logged_in():
             account.login(True, _credentials_from_env())
-        self._project_info: ProjectInfo | None = None
+        return api
 
     def get_version(self) -> str:
         info = self._api.infos().get_info()
@@ -295,9 +326,67 @@ class Sirius:
         self._project_info = None
 
     def shutdown(self) -> None:
+        if self._running_api is None:
+            return
+        # Captured before `shutdown_sirius`, which forgets both on success.
+        # The `Popen` handle is needed to reap a process this SDK started: a
+        # zombie would still pass a pid liveness check.
+        process: subprocess.Popen[bytes] | None = SiriusSDK.process
+        pid: int | None = SiriusSDK.process_id
         self._sdk.shutdown_sirius()
+        self._running_api = None
+        self._project_info = None
+        # `shutdown_sirius` leaves the dead instance's port and API client
+        # behind; the next attach must search for a live instance afresh.
+        self._sdk.reset_sdk_class()
+        _wait_for_exit(process, pid)
 
     def _require_project_id(self) -> str:
         if self._project_info is None:
             raise NoActiveProjectError(NO_ACTIVE_PROJECT_MESSAGE)
         return self._project_info.project_id
+
+
+#: How long `Sirius.shutdown` waits for the JVM to exit. `shutdown_sirius`
+#: returns as soon as SIRIUS acknowledges the request, while the old process
+#: may still be running -- starting the next instance before it is gone
+#: would briefly hold both heaps and could attach to the dying one.
+_SHUTDOWN_TIMEOUT_SECONDS = 120.0
+
+
+def _wait_for_exit(process: subprocess.Popen[bytes] | None, pid: int | None) -> None:
+    """Block until the shut-down SIRIUS process is gone.
+
+    Raises:
+        SiriusShutdownError: it is still alive after
+            `_SHUTDOWN_TIMEOUT_SECONDS`.
+    """
+    if process is not None:
+        try:
+            process.wait(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            raise SiriusShutdownError(
+                f"SIRIUS process {process.pid} did not exit within "
+                f"{_SHUTDOWN_TIMEOUT_SECONDS:.0f}s of being shut down."
+            ) from exc
+        return
+    if pid is None:
+        return
+    deadline = time.monotonic() + _SHUTDOWN_TIMEOUT_SECONDS
+    while _pid_is_alive(pid):
+        if time.monotonic() > deadline:
+            raise SiriusShutdownError(
+                f"SIRIUS process {pid} did not exit within "
+                f"{_SHUTDOWN_TIMEOUT_SECONDS:.0f}s of being shut down."
+            )
+        time.sleep(0.5)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # alive, owned by another user
+        pass
+    return True

@@ -23,6 +23,10 @@ structure) plus issue #21's remaining batch-control surface:
   finds the successful ones). `main` exits non-zero and prints every
   failed chunk's name and error in the final summary whenever
   `GroundtruthSummary.failures` is non-empty.
+- SIRIUS is shut down after every chunk (success or failure) and the next
+  chunk that needs it starts a fresh instance (`Sirius.shutdown`). SIRIUS
+  6.5.4 retains ~0.9 GB of heap per chunk that only a process exit frees,
+  so one long-lived instance grows by hundreds of GB over the full dataset.
 
 A feature's true structure is looked up by ``external_feature_id`` against
 a MassSpecGym-``identifier``-keyed map built once from the fetched TSV --
@@ -72,6 +76,7 @@ from feature_probabilities.schema import (
 from feature_probabilities.sirius import (
     Sirius,
     SiriusCredentialsError,
+    SiriusShutdownError,
     SiriusStartupError,
     SiriusVersionMismatchError,
     SiriusVersionUnavailableError,
@@ -99,6 +104,7 @@ _CLICK_EXCEPTION_ERRORS = (
     MassSpecGymParseError,
     RunCacheError,
     SiriusCredentialsError,
+    SiriusShutdownError,
     SiriusStartupError,
     SiriusVersionMismatchError,
     SiriusVersionUnavailableError,
@@ -211,15 +217,18 @@ def generate_groundtruth(
     chunk's work survives a later chunk's failure; on failure, `rollback`s
     first, so a partially-persisted failed chunk leaves no rows behind,
     then records a `ChunkFailure` and moves on to the next chunk rather
-    than aborting the whole run. Only errors raised *before* any chunk is
-    processed (SIRIUS version mismatch, MassSpecGym fetch/parse failure)
-    propagate out of this function.
+    than aborting the whole run. Either way `sirius` is shut down after the
+    chunk, freeing the heap SIRIUS never releases on its own. Only errors
+    raised *before* any chunk is processed (SIRIUS version mismatch,
+    MassSpecGym fetch/parse failure) or by a shutdown propagate out of this
+    function.
 
     Raises:
         SiriusVersionMismatchError: the installed SIRIUS version doesn't
             match `config.required_sirius_version`.
         MassSpecGymFetchError: MassSpecGym couldn't be fetched.
         MassSpecGymParseError: MassSpecGym's TSV is malformed.
+        SiriusShutdownError: SIRIUS didn't exit after a chunk.
     """
     require_matching_sirius_version(sirius, config.required_sirius_version)
 
@@ -283,6 +292,8 @@ def generate_groundtruth(
                     )
                 )
                 continue
+            finally:
+                sirius.shutdown()
 
             chunks_processed += 1
             cache_hits += 1 if result.from_cache else 0
@@ -382,19 +393,24 @@ def main(
         engine = create_database(config.db_path)
         try:
             sirius = Sirius(headless=True)
-            with (
-                tempfile.TemporaryDirectory(prefix="generate-groundtruth-") as tmp,
-                Session(engine) as session,
-            ):
-                summary = generate_groundtruth(
-                    session,
-                    sirius,
-                    config,
-                    work_dir=Path(tmp),
-                    force=force,
-                    instrument_type=instrument_type,
-                )
-            sirius.shutdown()
+            try:
+                with (
+                    tempfile.TemporaryDirectory(prefix="generate-groundtruth-") as tmp,
+                    Session(engine) as session,
+                ):
+                    summary = generate_groundtruth(
+                        session,
+                        sirius,
+                        config,
+                        work_dir=Path(tmp),
+                        force=force,
+                        instrument_type=instrument_type,
+                    )
+            finally:
+                # Covers runs that end before or without a per-chunk
+                # shutdown (no chunks, a fetch/version error, Ctrl-C);
+                # a no-op when the last chunk already shut SIRIUS down.
+                sirius.shutdown()
         finally:
             engine.dispose()
     except _CLICK_EXCEPTION_ERRORS as exc:

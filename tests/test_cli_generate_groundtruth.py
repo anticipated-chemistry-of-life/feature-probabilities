@@ -487,6 +487,38 @@ def test_every_chunks_project_is_closed_after_its_run(
     assert fake.close_project_calls == 2
 
 
+def test_every_chunk_runs_on_a_fresh_sirius_instance_even_after_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIRIUS retains heap per chunk that only a process exit frees.
+
+    The first chunk fails, so a shutdown missing from the failure path would
+    leave the second chunk on the first chunk's instance.
+    """
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-qtof", instrument_type="QTOF"),
+            _row("msg-orbitrap", instrument_type="Orbitrap"),
+        ],
+    )
+    fake = _fake_sirius_for("msg-orbitrap", "AAAAAAAAAAAAAA")
+    fake.fail_on_run = {"qtof_0.mgf": RuntimeError("sirius blew up")}
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    result = CliRunner().invoke(
+        main, ["--config", str(_write_config(tmp_path, tmp_path / "db.duckdb"))]
+    )
+
+    assert "qtof_0.mgf" in result.output
+    assert [path.name for path, _ in fake.create_project_calls] == [
+        "qtof_0",
+        "orbitrap_0",
+    ]
+    assert fake.instances_started == 2
+    assert not fake.running
+
+
 def test_blank_instrument_type_rows_are_excluded_by_a_specific_instrument_type_filter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

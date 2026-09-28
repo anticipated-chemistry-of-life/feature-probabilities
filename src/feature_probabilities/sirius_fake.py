@@ -122,22 +122,35 @@ class FakeSirius:
     #: Number of `close_project` calls, so a test can assert a batch closed
     #: every project it created without inspecting any other state.
     close_project_calls: int = field(default=0, init=False)
+    #: SIRIUS instances this fake has stood in for: 1 for construction, plus
+    #: one per restart -- the first call needing SIRIUS after `shutdown`,
+    #: mirroring the real wrapper's lazy attach-or-start.
+    instances_started: int = field(default=1, init=False)
+    #: Whether an instance is up, i.e. no `shutdown` since the last start.
+    running: bool = field(default=True, init=False)
 
     _current_spectra_file: Path | None = field(default=None, init=False, repr=False)
     _has_project: bool = field(default=False, init=False, repr=False)
 
     def get_version(self) -> str:
+        self._ensure_running()
         return self.version
 
     def create_project(
         self, project_path: Path, project_name: str | None = None
     ) -> None:
+        self._ensure_running()
         self.create_project_calls.append((Path(project_path), project_name))
         self._has_project = True
         self._current_spectra_file = None
 
     def close_project(self) -> None:
         self.close_project_calls += 1
+        self._has_project = False
+        self._current_spectra_file = None
+
+    def shutdown(self) -> None:
+        self.running = False
         self._has_project = False
         self._current_spectra_file = None
 
@@ -176,3 +189,8 @@ class FakeSirius:
     def _require_project(self) -> None:
         if not self._has_project:
             raise NoActiveProjectError(NO_ACTIVE_PROJECT_MESSAGE)
+
+    def _ensure_running(self) -> None:
+        if not self.running:
+            self.running = True
+            self.instances_started += 1
