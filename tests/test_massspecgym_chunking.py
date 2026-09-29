@@ -46,7 +46,9 @@ def _row(
 
 
 def _write_tsv(
-    tmp_path: Path, rows: list[dict[str, str]], columns: tuple[str, ...] = MASSSPECGYM_COLUMNS
+    tmp_path: Path,
+    rows: list[dict[str, str]],
+    columns: tuple[str, ...] = MASSSPECGYM_COLUMNS,
 ) -> Path:
     tsv_path = tmp_path / "MassSpecGym1.5.tsv"
     with tsv_path.open("w", newline="") as handle:
@@ -86,7 +88,9 @@ def test_one_chunk_file_written_per_instrument_type_present(tmp_path: Path) -> N
     assert len(_mgf_blocks(chunk_paths["QTOF"][0])) == 1
 
 
-def test_group_larger_than_chunk_size_splits_into_multiple_files(tmp_path: Path) -> None:
+def test_group_larger_than_chunk_size_splits_into_multiple_files(
+    tmp_path: Path,
+) -> None:
     rows = [_row(f"orbitrap-{i}") for i in range(5)]
     tsv_path = _write_tsv(tmp_path, rows)
     output_dir = tmp_path / "chunks"
@@ -98,7 +102,9 @@ def test_group_larger_than_chunk_size_splits_into_multiple_files(tmp_path: Path)
     assert block_counts == [2, 2, 1]
 
 
-def test_every_spectrum_carries_charge_pepmass_and_feature_identifier(tmp_path: Path) -> None:
+def test_every_spectrum_carries_charge_pepmass_and_feature_identifier(
+    tmp_path: Path,
+) -> None:
     tsv_path = _write_tsv(
         tmp_path,
         [_row("msg-42", precursor_mz="151.5")],
@@ -229,11 +235,17 @@ def test_malformed_mzs_raises_clear_error(tmp_path: Path) -> None:
         chunk_massspecgym_for_sirius(tsv_path, output_dir)
 
 
-def test_mismatched_mzs_and_intensities_lengths_raises_clear_error(tmp_path: Path) -> None:
-    tsv_path = _write_tsv(tmp_path, [_row("msg-1", mzs="50.0,100.0", intensities="10.0")])
+def test_mismatched_mzs_and_intensities_lengths_raises_clear_error(
+    tmp_path: Path,
+) -> None:
+    tsv_path = _write_tsv(
+        tmp_path, [_row("msg-1", mzs="50.0,100.0", intensities="10.0")]
+    )
     output_dir = tmp_path / "chunks"
 
-    with pytest.raises(MassSpecGymParseError, match="mzs.*intensities|intensities.*mzs"):
+    with pytest.raises(
+        MassSpecGymParseError, match="mzs.*intensities|intensities.*mzs"
+    ):
         chunk_massspecgym_for_sirius(tsv_path, output_dir)
 
 

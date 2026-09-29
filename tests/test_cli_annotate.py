@@ -141,7 +141,10 @@ def _kde_dict(points: list[tuple[float, float]]) -> dict[str, gaussian_kde]:
 
 
 def _seed_kde_model(
-    db_path: Path, artifact_path: Path, *, points: list[tuple[float, float]] | None = None
+    db_path: Path,
+    artifact_path: Path,
+    *,
+    points: list[tuple[float, float]] | None = None,
 ) -> int:
     """Pickle a real, fitted KDE dict to `artifact_path` and insert its `kde_models` row.
 
@@ -531,7 +534,9 @@ def test_repointing_kde_model_on_cached_batch_adds_scores_without_new_sirius_cal
             for row in session.scalars(select(CalibrationScore)).all()
         }
         assert set(scores) == {kde_model_1_id, kde_model_2_id}
-        assert all(row.annotation_id == annotation.annotation_id for row in scores.values())
+        assert all(
+            row.annotation_id == annotation.annotation_id for row in scores.values()
+        )
 
 
 def test_force_flag_calls_wrapper_for_every_file_even_when_cached(

@@ -53,6 +53,7 @@ The dataset can be downloaded from the MassIVE FTP server using Python's built-i
 import ftplib
 import os
 
+
 def download_ftp_dir(ftp, remote_dir, local_dir):
     os.makedirs(local_dir, exist_ok=True)
     lines = []
@@ -68,6 +69,7 @@ def download_ftp_dir(ftp, remote_dir, local_dir):
         else:
             with open(local_path, "wb") as f:
                 ftp.retrbinary(f"RETR {remote_path}", f.write)
+
 
 ftp = ftplib.FTP("massive-ftp.ucsd.edu")
 ftp.login()
@@ -154,10 +156,13 @@ sirius rest -s -p 8080 --headless
 from PySirius import *
 
 sdk = SiriusSDK()
-api = sdk.start_sirius(sirius_path="path/to/sirius-executable", port=8080, headless=True)
-if api.actuator().health().get('status') != "UP":
-    raise RuntimeError("SIRIUS REST service is not reachable. "
-                       "Check that SIRIUS started correctly.")
+api = sdk.start_sirius(
+    sirius_path="path/to/sirius-executable", port=8080, headless=True
+)
+if api.actuator().health().get("status") != "UP":
+    raise RuntimeError(
+        "SIRIUS REST service is not reachable. Check that SIRIUS started correctly."
+    )
 ```
 
 > **Note:** When using the first approach, this step is the only non-Python code in this protocol.
@@ -171,9 +176,10 @@ from PySirius import *
 
 sdk = SiriusSDK()
 api = sdk.attach_or_start_sirius()
-if api.actuator().health().get('status') != "UP":
-    raise RuntimeError("SIRIUS REST service is not reachable. "
-                       "Check that SIRIUS started correctly.")
+if api.actuator().health().get("status") != "UP":
+    raise RuntimeError(
+        "SIRIUS REST service is not reachable. Check that SIRIUS started correctly."
+    )
 ```
 
 > **Note:** See [troubleshooting 1](#problem-1) if this step fails.
@@ -182,9 +188,7 @@ if api.actuator().health().get('status') != "UP":
 
 ```python
 accept_terms = True
-account_credentials = AccountCredentials(
-    username="SIRIUS_USER", password="SIRIUS_PW"
-)
+account_credentials = AccountCredentials(username="SIRIUS_USER", password="SIRIUS_PW")
 api.account().login(accept_terms, account_credentials)
 ```
 
@@ -202,8 +206,7 @@ project_info = api.projects().create_project("STAR_protocol_rosemary")
 
 ```python
 project_info = api.projects().open_project(
-    "STAR_protocol_rosemary",
-    "/path/to/project/file"
+    "STAR_protocol_rosemary", "/path/to/project/file"
 )
 ```
 
@@ -238,11 +241,12 @@ def parse_group_mapping(file_path):
     with open(file_path) as f:
         for line in f:
             line = line.strip()
-            if not line or '=' not in line:
+            if not line or "=" not in line:
                 continue
-            key, value = line.split('=', 1)
-            groups[key] = value.split(';')
+            key, value = line.split("=", 1)
+            groups[key] = value.split(";")
     return groups
+
 
 groups = parse_group_mapping(
     f"{root_path}/updates/2026-03-25_lfnothias_1828a86c/metadata/"
@@ -259,8 +263,7 @@ print("Groups found:", list(groups.keys()))
 from os.path import basename
 
 sample_types = [
-    "Blank" if basename(f) in groups['GROUP_BLANKS'] else "Sample"
-    for f in files
+    "Blank" if basename(f) in groups["GROUP_BLANKS"] else "Sample" for f in files
 ]
 submission_parameters = LcmsSubmissionParameters.from_dict(
     {"sampleTypes": sample_types}
@@ -284,8 +287,7 @@ Before starting computations, inspect the quality of the dataset and filter acco
 **8.** Retrieve all aligned features.
 
 ```python
-aligned_features = api.features().get_aligned_features(
-    project_info.project_id)
+aligned_features = api.features().get_aligned_features(project_info.project_id)
 ```
 
 **9.** Plot the data quality distribution. See Figure 1.
@@ -298,22 +300,23 @@ from collections import Counter
 QUALITY_ORDER = [q.value for q in DataQuality]
 palette = px.colors.qualitative.Plotly
 QUALITY_COLORS = {
-    quality: palette[i % len(palette)]
-    for i, quality in enumerate(QUALITY_ORDER)
+    quality: palette[i % len(palette)] for i, quality in enumerate(QUALITY_ORDER)
 }
 quality_counts = Counter(f.quality for f in aligned_features)
-fig = go.Figure(go.Bar(
-    x=QUALITY_ORDER,
-    y=[quality_counts.get(k, 0) for k in QUALITY_ORDER],
-    marker_color=[QUALITY_COLORS.get(k) for k in QUALITY_ORDER],
-    hovertemplate="%{x}: %{y} features<extra></extra>"
-))
+fig = go.Figure(
+    go.Bar(
+        x=QUALITY_ORDER,
+        y=[quality_counts.get(k, 0) for k in QUALITY_ORDER],
+        marker_color=[QUALITY_COLORS.get(k) for k in QUALITY_ORDER],
+        hovertemplate="%{x}: %{y} features<extra></extra>",
+    )
+)
 fig.update_layout(
     title="Feature Quality Distribution (all features, before exclusion)",
     xaxis_title="Data Quality",
     yaxis_title="Number of Aligned Features",
     showlegend=False,
-    template="plotly_white"
+    template="plotly_white",
 )
 fig.show()
 ```
@@ -331,8 +334,7 @@ EXCLUDED_QUALITIES = [DataQuality.NOT_APPLICABLE, DataQuality.LOWEST, DataQualit
 
 if EXCLUDED_QUALITIES:
     aligned_features = [
-        f for f in aligned_features
-        if f.quality not in EXCLUDED_QUALITIES
+        f for f in aligned_features if f.quality not in EXCLUDED_QUALITIES
     ]
     print(f"Excluded tiers: {[q.value for q in EXCLUDED_QUALITIES]}")
 else:
@@ -397,7 +399,7 @@ api.jobs().save_job_config(JOB_CONFIG_NAME, job_submission)
 job = api.jobs().start_job_from_config(
     project_info.project_id,
     JOB_CONFIG_NAME,
-    [f.aligned_feature_id for f in aligned_features]
+    [f.aligned_feature_id for f in aligned_features],
 )
 api.wait_for_job_completion(project_info.project_id, job.id)
 ```
@@ -429,15 +431,15 @@ def create_run_id_groups(runs, groups):
     name_to_id = {run.name: run.run_id for run in runs.content}
     return {
         group_name: [
-            name_to_id[f.rsplit('.', 1)[0]]
+            name_to_id[f.rsplit(".", 1)[0]]
             for f in filenames
-            if f.rsplit('.', 1)[0] in name_to_id
+            if f.rsplit(".", 1)[0] in name_to_id
         ]
         for group_name, filenames in groups.items()
     }
 
-runs = api.runs().get_runs_page_experimental(
-    project_info.project_id, size=len(files))
+
+runs = api.runs().get_runs_page_experimental(project_info.project_id, size=len(files))
 id_groups = create_run_id_groups(runs, groups)
 ```
 
@@ -446,18 +448,22 @@ id_groups = create_run_id_groups(runs, groups)
 **14.** Define two categorical tag dimensions: `plantPart` (Flower/Leaf/Stem) and `age` (Young/Old).
 
 ```python
-plant_part_tag = TagDefinitionImport.from_dict({
-    "tagName": "plantPart",
-    "tagType": "PROCESSING",
-    "valueType": ValueType.TEXT,
-    "possibleValues": ["Flower", "Leaf", "Stem"]
-})
-age_tag = TagDefinitionImport.from_dict({
-    "tagName": "age",
-    "tagType": "PROCESSING",
-    "valueType": ValueType.TEXT,
-    "possibleValues": ["Young", "Old"]
-})
+plant_part_tag = TagDefinitionImport.from_dict(
+    {
+        "tagName": "plantPart",
+        "tagType": "PROCESSING",
+        "valueType": ValueType.TEXT,
+        "possibleValues": ["Flower", "Leaf", "Stem"],
+    }
+)
+age_tag = TagDefinitionImport.from_dict(
+    {
+        "tagName": "age",
+        "tagType": "PROCESSING",
+        "valueType": ValueType.TEXT,
+        "possibleValues": ["Young", "Old"],
+    }
+)
 api.tags().create_tags(project_info.project_id, [plant_part_tag, age_tag])
 ```
 
@@ -465,36 +471,36 @@ api.tags().create_tags(project_info.project_id, [plant_part_tag, age_tag])
 
 ```python
 tag_map = [
-    ('GROUP_STEM', 'plantPart', 'Stem'),
-    ('GROUP_FLOWERS', 'plantPart', 'Flower'),
-    ('GROUP_LEAF', 'plantPart', 'Leaf'),
-    ('GROUP_YOUNG', 'age', 'Young'),
-    ('GROUP_OLD', 'age', 'Old'),
+    ("GROUP_STEM", "plantPart", "Stem"),
+    ("GROUP_FLOWERS", "plantPart", "Flower"),
+    ("GROUP_LEAF", "plantPart", "Leaf"),
+    ("GROUP_YOUNG", "age", "Young"),
+    ("GROUP_OLD", "age", "Old"),
 ]
 tag_submissions = [
-    TagSubmission.from_dict({
-        "tagName": tag_name,
-        "value": value,
-        "taggedObjectId": run_id
-    })
+    TagSubmission.from_dict(
+        {"tagName": tag_name, "value": value, "taggedObjectId": run_id}
+    )
     for group_key, tag_name, value in tag_map
     for run_id in id_groups[group_key]
 ]
-api.runs().add_tags_to_runs_experimental(
-    project_info.project_id, tag_submissions
-)
+api.runs().add_tags_to_runs_experimental(project_info.project_id, tag_submissions)
 ```
 
 **16.** Using Lucene query syntax, define named groups for young and old leaves.
 
 ```python
 api.tags().add_group(
-    project_info.project_id, "Young Leaves",
-    'tags.age:"Young" AND tags.plantPart:"Leaf"', "Samples"
+    project_info.project_id,
+    "Young Leaves",
+    'tags.age:"Young" AND tags.plantPart:"Leaf"',
+    "Samples",
 )
 api.tags().add_group(
-    project_info.project_id, "Old Leaves",
-    'tags.age:"Old" AND tags.plantPart:"Leaf"', "Samples"
+    project_info.project_id,
+    "Old Leaves",
+    'tags.age:"Old" AND tags.plantPart:"Leaf"',
+    "Samples",
 )
 ```
 
@@ -507,12 +513,14 @@ Compute fold changes at the aligned feature level to identify individual metabol
 **17.** Create a fold change job submission configuration defining the left and right run groups, aggregation strategy, and quantification measure.
 
 ```python
-fold_change_submission = FoldChangeJobSubmission.from_dict({
-    "leftRunGroup": "Young Leaves",
-    "rightRunGroup": "Old Leaves",
-    "aggregationTypes": [AggregationType.AVG],
-    "quantificationMeasures": [QuantMeasure.AREA_UNDER_CURVE]
-})
+fold_change_submission = FoldChangeJobSubmission.from_dict(
+    {
+        "leftRunGroup": "Young Leaves",
+        "rightRunGroup": "Old Leaves",
+        "aggregationTypes": [AggregationType.AVG],
+        "quantificationMeasures": [QuantMeasure.AREA_UNDER_CURVE],
+    }
+)
 ```
 
 > **Note:** Multiple aggregation types (`AVG`, `MAX`, `MIN`) and quantification measures (`AREA_UNDER_CURVE`, `APEX_INTENSITY`) can be requested in a single submission. All requested combinations are computed in one job and retrieved independently at retrieval time.
@@ -522,22 +530,20 @@ fold_change_submission = FoldChangeJobSubmission.from_dict({
 **18.** Start the fold change computation job and wait for completion.
 
 ```python
-fc_job = api.feature_statistics()\
-    .compute_aligned_feature_fold_changes_experimental(
-        project_info.project_id, fold_change_submission
-    )
+fc_job = api.feature_statistics().compute_aligned_feature_fold_changes_experimental(
+    project_info.project_id, fold_change_submission
+)
 api.wait_for_job_completion(project_info.project_id, fc_job.id)
 ```
 
 **19.** Retrieve the feature statistics table.
 
 ```python
-feature_statistics_table = api.feature_statistics()\
-    .get_aligned_feature_fold_change_table_experimental(
-        project_info.project_id,
-        AggregationType.AVG,
-        QuantMeasure.AREA_UNDER_CURVE
+feature_statistics_table = (
+    api.feature_statistics().get_aligned_feature_fold_change_table_experimental(
+        project_info.project_id, AggregationType.AVG, QuantMeasure.AREA_UNDER_CURVE
     )
+)
 ```
 
 ### Verification of a known hypothesis: Replicating the rosmarinic acid finding
@@ -551,7 +557,7 @@ Up to this point, the analysis was carried out in a completely untargeted fashio
 ```python
 import pubchempy as pcp
 
-results = pcp.get_compounds('Rosmarinic acid', 'name')
+results = pcp.get_compounds("Rosmarinic acid", "name")
 if not results:
     raise RuntimeError("Rosmarinic acid not found in PubChem.")
 rosmarinic_acid_pubchem_id = results[0].cid
@@ -562,8 +568,7 @@ print(f"PubChem CID for rosmarinic acid: {rosmarinic_acid_pubchem_id}")
 
 ```python
 aligned_features = api.features().get_aligned_features(
-    project_info.project_id,
-    opt_fields=[AlignedFeatureOptField.TOPANNOTATIONS]
+    project_info.project_id, opt_fields=[AlignedFeatureOptField.TOPANNOTATIONS]
 )
 ```
 
@@ -572,12 +577,12 @@ aligned_features = api.features().get_aligned_features(
 **22.** Filter aligned features for those annotated with the retrieved PubChem CID.
 
 ```python
-pubchem_db_link = DBLink.from_dict({
-    'name': 'PUBCHEM',
-    'id': str(rosmarinic_acid_pubchem_id)
-})
+pubchem_db_link = DBLink.from_dict(
+    {"name": "PUBCHEM", "id": str(rosmarinic_acid_pubchem_id)}
+)
 rosmarinic_acid_features = [
-    f for f in aligned_features
+    f
+    for f in aligned_features
     if f.top_annotations.structure_annotation is not None
     and pubchem_db_link in f.top_annotations.structure_annotation.db_links
 ]
@@ -587,8 +592,9 @@ rosmarinic_acid_features = [
 
 ```python
 rosmarinic_acid_base_feature = next(
-    f for f in rosmarinic_acid_features
-    if f.top_annotations.formula_annotation.adduct == '[M + H]+'
+    f
+    for f in rosmarinic_acid_features
+    if f.top_annotations.formula_annotation.adduct == "[M + H]+"
 )
 ```
 
@@ -603,6 +609,7 @@ rosmarinic_acid_base_feature = next(
 ```python
 import math
 
+
 def log2_fold_change(raw_fc, invert=False):
     """Return a signed log2 fold change while preserving zero as infinity.
 
@@ -616,6 +623,7 @@ def log2_fold_change(raw_fc, invert=False):
     else:
         log2_fc = math.log2(raw_fc)
     return -log2_fc if invert else log2_fc
+
 
 def displayed_fold_change(raw_fc, invert=False):
     """Return the fold change ratio in the displayed group order."""
@@ -635,10 +643,9 @@ def get_fold_change(statistics_table, row_id, group1, group2):
         row_idx = statistics_table.row_ids.index(row_id)
     except ValueError:
         return None
-    for col_idx, (left, right) in enumerate(zip(
-        statistics_table.column_left_groups,
-        statistics_table.column_right_groups
-    )):
+    for col_idx, (left, right) in enumerate(
+        zip(statistics_table.column_left_groups, statistics_table.column_right_groups)
+    ):
         if left == group1 and right == group2:
             fc = statistics_table.values[row_idx][col_idx]
             return log2_fold_change(fc)
@@ -654,10 +661,13 @@ def get_fold_change(statistics_table, row_id, group1, group2):
 log2_fc = get_fold_change(
     feature_statistics_table,
     rosmarinic_acid_base_feature.aligned_feature_id,
-    "Old Leaves", "Young Leaves"
+    "Old Leaves",
+    "Young Leaves",
 )
-print(f"Rosmarinic acid log2(Old / Young) = {log2_fc:.3f} "
-      f"(fold change = {2**log2_fc:.2f}x)")
+print(
+    f"Rosmarinic acid log2(Old / Young) = {log2_fc:.3f} "
+    f"(fold change = {2**log2_fc:.2f}x)"
+)
 ```
 
 > **Note:** A positive log2 fold change confirms that rosmarinic acid is more abundant in old leaf tissue, replicating the prior known findings.[⁹](#ref-9)⁻[¹¹](#ref-11) Running this analysis, the result is a log2 fold change of 2.462, corresponding to more than a 5.51-fold enrichment in old leaves. In an untargeted approach, this check supports a deeper investigation of the rosmarinic acid feature.
@@ -676,18 +686,21 @@ This step ranks all features that received a structural annotation from CSI:Fing
 import pandas as pd
 import numpy as np
 
+
 def get_annotated_fold_changes_df(statistics_table, group1, group2, aligned_features):
     """Return a DataFrame of log2 fold changes for all CSI:FingerID-annotated features, ordered
     by absolute log2 fold change (descending)."""
     col_idx, invert = None, False
-    for idx, (left, right) in enumerate(zip(
-        statistics_table.column_left_groups,
-        statistics_table.column_right_groups
-    )):
+    for idx, (left, right) in enumerate(
+        zip(statistics_table.column_left_groups, statistics_table.column_right_groups)
+    ):
         if left == group1 and right == group2:
-            col_idx = idx; break
+            col_idx = idx
+            break
         elif left == group2 and right == group1:
-            col_idx = idx; invert = True; break
+            col_idx = idx
+            invert = True
+            break
     if col_idx is None:
         return pd.DataFrame()
 
@@ -706,21 +719,23 @@ def get_annotated_fold_changes_df(statistics_table, group1, group2, aligned_feat
         quality, compound_name = feature_meta[feature_id]
         left_abundance = statistics_table.left_abundances[row_idx][col_idx]
         right_abundance = statistics_table.right_abundances[row_idx][col_idx]
-        rows.append({
-            'feature_id': feature_id,
-            'compound_name': compound_name,
-            'quality': quality,
-            'log2_fc': log2_fc,
-            'fold_change': displayed_fold_change(raw, invert=invert),
-            'direction': f"{group1}/{group2}",
-            'leftAbundance': left_abundance,
-            'rightAbundance': right_abundance,
-        })
+        rows.append(
+            {
+                "feature_id": feature_id,
+                "compound_name": compound_name,
+                "quality": quality,
+                "log2_fc": log2_fc,
+                "fold_change": displayed_fold_change(raw, invert=invert),
+                "direction": f"{group1}/{group2}",
+                "leftAbundance": left_abundance,
+                "rightAbundance": right_abundance,
+            }
+        )
     return (
         pd.DataFrame(rows)
-        .assign(abs_log2_fc=lambda d: d['log2_fc'].abs())
-        .sort_values('abs_log2_fc', ascending=False)
-        .drop(columns='abs_log2_fc')
+        .assign(abs_log2_fc=lambda d: d["log2_fc"].abs())
+        .sort_values("abs_log2_fc", ascending=False)
+        .drop(columns="abs_log2_fc")
         .reset_index(drop=True)
     )
 ```
@@ -731,7 +746,9 @@ def get_annotated_fold_changes_df(statistics_table, group1, group2, aligned_feat
 fc_df = get_annotated_fold_changes_df(
     feature_statistics_table, "Young Leaves", "Old Leaves", aligned_features
 )
-print(f"{len(fc_df)} annotated features with fold change values, including zero and infinite values")
+print(
+    f"{len(fc_df)} annotated features with fold change values, including zero and infinite values"
+)
 ```
 
 *Optional:* To replicate the plot from Figure 2, run the following code after creating `fc_df`.
@@ -739,11 +756,10 @@ print(f"{len(fc_df)} annotated features with fold change values, including zero 
 ```python
 import plotly.express as px
 
-fc_df["totalAbundance"] = fc_df["leftAbundance"].fillna(0) + fc_df["rightAbundance"].fillna(0)
-plot_df = fc_df[
-    fc_df["totalAbundance"].notna()
-    & (fc_df["totalAbundance"] > 0)
-].copy()
+fc_df["totalAbundance"] = fc_df["leftAbundance"].fillna(0) + fc_df[
+    "rightAbundance"
+].fillna(0)
+plot_df = fc_df[fc_df["totalAbundance"].notna() & (fc_df["totalAbundance"] > 0)].copy()
 plot_df["quality"] = plot_df["quality"].astype(str)
 fig = px.box(
     plot_df,
@@ -753,12 +769,12 @@ fig = px.box(
     category_orders={"quality": [str(q.value) for q in DataQuality]},
     hover_data=["feature_id", "compound_name", "log2_fc"],
     log_y=True,
-    title="Total Feature Abundance by Data Quality"
+    title="Total Feature Abundance by Data Quality",
 )
 fig.update_layout(
     xaxis_title="Data Quality",
     yaxis_title="Total abundance (log scale)",
-    template="plotly_white"
+    template="plotly_white",
 )
 fig.show()
 ```
@@ -766,18 +782,19 @@ fig.show()
 **29.** If only interested in up- or downregulation, filter out infinite values. Then, inspect the top-ranking candidate.
 
 ```python
-fc_df_finite = fc_df[np.isfinite(fc_df['log2_fc'])]
+fc_df_finite = fc_df[np.isfinite(fc_df["log2_fc"])]
 if fc_df_finite.empty:
     raise RuntimeError("No annotated feature with finite fold change found.")
 top_row = fc_df_finite.iloc[0]
-top_id = top_row['feature_id']
+top_id = top_row["feature_id"]
 top_feature = api.features().get_aligned_feature(
-    project_info.project_id, top_id,
-    opt_fields=[AlignedFeatureOptField.TOPANNOTATIONS]
+    project_info.project_id, top_id, opt_fields=[AlignedFeatureOptField.TOPANNOTATIONS]
 )
 print(f"Highest FC feature quality:  {top_feature.quality}")
 print(f"Log2 fold change:            {top_row['log2_fc']}")
-print(f"Structure annotation:        {top_feature.top_annotations.structure_annotation.structure_name}")
+print(
+    f"Structure annotation:        {top_feature.top_annotations.structure_annotation.structure_name}"
+)
 ```
 
 > **Note:** When allowing lower-quality features to pass through the quality filtering, a `BAD` or `LOWEST` quality feature at the top of the ranking should be interpreted with caution.
@@ -785,13 +802,13 @@ print(f"Structure annotation:        {top_feature.top_annotations.structure_anno
 *Optional:* Apply an additional post hoc filter to retain only `GOOD` quality features without re-running the computation job.
 
 ```python
-fc_df_high_quality = fc_df_finite[fc_df_finite['quality'].isin([DataQuality.GOOD])]
+fc_df_high_quality = fc_df_finite[fc_df_finite["quality"].isin([DataQuality.GOOD])]
 ```
 
 *Optional:* When specifically looking for features not expressed in the right class but expressed in the left class, filter for infinite values and inspect the entries.
 
 ```python
-fc_df_infinite = fc_df[np.isinf(fc_df['log2_fc'])]
+fc_df_infinite = fc_df[np.isinf(fc_df["log2_fc"])]
 ```
 
 > ⚠️ **CRITICAL:** Fold changes are direction-dependent. Features absent in the left class and present in the right class will have a fold change of 0. To obtain these features with positive infinity values, switch the order of the classes. Note again that we artificially set fold changes of 0 to a log2 fold change of negative infinity to minimize this effect.
@@ -807,40 +824,40 @@ Aggregate abundances at the level of compound classes to obtain a robust overvie
 > **Note:** You can choose between both the Natural Products Classifier (NPC)[¹⁶](#ref-16) and ClassyFire[¹⁷](#ref-17) hierarchies.
 
 ```python
-compound_class_fold_change_submission = FoldChangeJobSubmission.from_dict({
-    "leftRunGroup": "Young Leaves",
-    "rightRunGroup": "Old Leaves",
-    "aggregationTypes": [AggregationType.AVG],
-    "quantificationMeasures": [QuantMeasure.AREA_UNDER_CURVE]
-})
-npc_fc_job = api.npc_class_statistics()\
-    .compute_npc_class_fold_changes_experimental(
-        project_info.project_id, compound_class_fold_change_submission
-    )
+compound_class_fold_change_submission = FoldChangeJobSubmission.from_dict(
+    {
+        "leftRunGroup": "Young Leaves",
+        "rightRunGroup": "Old Leaves",
+        "aggregationTypes": [AggregationType.AVG],
+        "quantificationMeasures": [QuantMeasure.AREA_UNDER_CURVE],
+    }
+)
+npc_fc_job = api.npc_class_statistics().compute_npc_class_fold_changes_experimental(
+    project_info.project_id, compound_class_fold_change_submission
+)
 api.wait_for_job_completion(project_info.project_id, npc_fc_job.id)
 
-classyfire_fc_job = api.classyfire_class_statistics()\
-    .compute_classyfire_class_fold_changes_experimental(
-        project_info.project_id, compound_class_fold_change_submission
-    )
+classyfire_fc_job = api.classyfire_class_statistics().compute_classyfire_class_fold_changes_experimental(
+    project_info.project_id, compound_class_fold_change_submission
+)
 api.wait_for_job_completion(project_info.project_id, classyfire_fc_job.id)
 ```
 
 **31.** Retrieve the statistics tables for NPC and ClassyFire.
 
 ```python
-npc_statistics_table = api.npc_class_statistics()\
-    .get_npc_class_fold_change_table_experimental(
+npc_statistics_table = (
+    api.npc_class_statistics().get_npc_class_fold_change_table_experimental(
         project_info.project_id,
         aggregation=AggregationType.AVG,
-        quantification=QuantMeasure.AREA_UNDER_CURVE
+        quantification=QuantMeasure.AREA_UNDER_CURVE,
     )
-classyfire_statistics_table = api.classyfire_class_statistics()\
-    .get_classyfire_class_fold_change_table_experimental(
-        project_info.project_id,
-        aggregation=AggregationType.AVG,
-        quantification=QuantMeasure.AREA_UNDER_CURVE
-    )
+)
+classyfire_statistics_table = api.classyfire_class_statistics().get_classyfire_class_fold_change_table_experimental(
+    project_info.project_id,
+    aggregation=AggregationType.AVG,
+    quantification=QuantMeasure.AREA_UNDER_CURVE,
+)
 ```
 
 **32.** Convert the raw tables into Pandas DataFrames and execute the parsing function on both tables.
@@ -849,14 +866,16 @@ classyfire_statistics_table = api.classyfire_class_statistics()\
 def parse_class_statistics_table(statistics_table, group1, group2):
     """Convert a class-level statistics table to a DataFrame."""
     col_idx, invert = None, False
-    for idx, (left, right) in enumerate(zip(
-        statistics_table.column_left_groups,
-        statistics_table.column_right_groups
-    )):
+    for idx, (left, right) in enumerate(
+        zip(statistics_table.column_left_groups, statistics_table.column_right_groups)
+    ):
         if left == group1 and right == group2:
-            col_idx = idx; break
+            col_idx = idx
+            break
         elif left == group2 and right == group1:
-            col_idx = idx; invert = True; break
+            col_idx = idx
+            invert = True
+            break
     assert col_idx is not None, f"Comparison {group1} vs {group2} not found."
 
     rows = []
@@ -866,20 +885,23 @@ def parse_class_statistics_table(statistics_table, group1, group2):
         raw = statistics_table.values[row_idx][col_idx]
         log2_fc = log2_fold_change(raw, invert=invert)
         total_ab = (left_abundance or 0) + (right_abundance or 0)
-        rows.append({
-            "row_id": row_id,
-            "name": statistics_table.row_names[row_idx],
-            "level": statistics_table.row_levels[row_idx],
-            "log2_fc": log2_fc,
-            "abs_log2_fc": abs(log2_fc),
-            "enriched_in": group1 if log2_fc > 0 else group2,
-            "leftAbundance": left_abundance,
-            "rightAbundance": right_abundance,
-            "totalAbundance": total_ab,
-        })
+        rows.append(
+            {
+                "row_id": row_id,
+                "name": statistics_table.row_names[row_idx],
+                "level": statistics_table.row_levels[row_idx],
+                "log2_fc": log2_fc,
+                "abs_log2_fc": abs(log2_fc),
+                "enriched_in": group1 if log2_fc > 0 else group2,
+                "leftAbundance": left_abundance,
+                "rightAbundance": right_abundance,
+                "totalAbundance": total_ab,
+            }
+        )
     df = pd.DataFrame(rows).sort_values("abs_log2_fc", ascending=False)
     print(f"{len(df)} class entries retrieved.")
     return df
+
 
 npc_df = parse_class_statistics_table(
     npc_statistics_table, "Young Leaves", "Old Leaves"
@@ -896,11 +918,13 @@ ABS_LOG2_FC_THRESHOLD = 1
 COLOR_GROUP1 = "#378ADD"
 COLOR_GROUP2 = "#D85A30"
 
+
 def _filter(df, threshold, levels):
     mask = df["abs_log2_fc"] >= threshold
     if levels is not None:
         mask &= df["level"].isin(levels)
     return df[mask].copy()
+
 
 def _with_plot_log2_fc(df):
     """Add finite plot_log2_fc values while preserving true log2_fc values."""
@@ -916,6 +940,7 @@ def _with_plot_log2_fc(df):
     )
     return sub
 
+
 def _title(group1, group2, levels, threshold):
     lvl_str = ", ".join(levels) if levels else "all levels"
     return f"{group1} vs {group2} | {lvl_str} | |log2 FC| >= {threshold}"
@@ -924,8 +949,9 @@ def _title(group1, group2, levels, threshold):
 **34.** Define a plotting function for raw group abundance sunbursts and inspect the absolute class abundances for each group before examining fold changes.
 
 ```python
-def plot_hierarchical_abundance_sunbursts(classyfire_df, cf_hierarchy, group1, group2,
-                                          max_levels=-1):
+def plot_hierarchical_abundance_sunbursts(
+    classyfire_df, cf_hierarchy, group1, group2, max_levels=-1
+):
     """
     Plots a dual sunburst chart for hierarchical abundances.
 
@@ -959,13 +985,15 @@ def plot_hierarchical_abundance_sunbursts(classyfire_df, cf_hierarchy, group1, g
     nodes = []
     for cid in all_ids:
         parent = id_to_parent.get(cid)
-        nodes.append({
-            "id": cid,
-            "label": id_to_name.get(cid, cid),
-            "parent": parent if parent and not pd.isna(parent) else "",
-            "left": leaf_left.get(cid, 0),
-            "right": leaf_right.get(cid, 0),
-        })
+        nodes.append(
+            {
+                "id": cid,
+                "label": id_to_name.get(cid, cid),
+                "parent": parent if parent and not pd.isna(parent) else "",
+                "left": leaf_left.get(cid, 0),
+                "right": leaf_right.get(cid, 0),
+            }
+        )
     nodes_df = pd.DataFrame(nodes)
 
     # drop trivial "chemical entities" class
@@ -978,25 +1006,44 @@ def plot_hierarchical_abundance_sunbursts(classyfire_df, cf_hierarchy, group1, g
         ("left", "Blues", [0, 0.48], group1),
         ("right", "Oranges", [0.52, 1.0], group2),
     ]:
-        fig.add_trace(go.Sunburst(
-            ids=nodes_df["id"],
-            labels=nodes_df["label"],
-            parents=nodes_df["parent"],
-            values=nodes_df[values_col],
-            name=name,
-            domain={"x": domain},
-            marker_colorscale=colorscale,
-            branchvalues="remainder",
-            maxdepth=max_levels,
-            hovertemplate="<br>%{label}</br><br>Abundance: %{value:.2e}<extra></extra>",
-        ))
+        fig.add_trace(
+            go.Sunburst(
+                ids=nodes_df["id"],
+                labels=nodes_df["label"],
+                parents=nodes_df["parent"],
+                values=nodes_df[values_col],
+                name=name,
+                domain={"x": domain},
+                marker_colorscale=colorscale,
+                branchvalues="remainder",
+                maxdepth=max_levels,
+                hovertemplate="<br>%{label}</br><br>Abundance: %{value:.2e}<extra></extra>",
+            )
+        )
     fig.update_layout(
         title=f"ClassyFire Hierarchical Class Abundance: {group1} (left) vs {group2} (right)",
         annotations=[
-            dict(text=group1, x=0.20, y=1.08, font_size=13, showarrow=False, xref="paper", yref="paper"),
-            dict(text=group2, x=0.80, y=1.08, font_size=13, showarrow=False, xref="paper", yref="paper"),
+            dict(
+                text=group1,
+                x=0.20,
+                y=1.08,
+                font_size=13,
+                showarrow=False,
+                xref="paper",
+                yref="paper",
+            ),
+            dict(
+                text=group2,
+                x=0.80,
+                y=1.08,
+                font_size=13,
+                showarrow=False,
+                xref="paper",
+                yref="paper",
+            ),
         ],
-        height=700, template="plotly_white",
+        height=700,
+        template="plotly_white",
         margin=dict(t=100, b=40, l=40, r=40),
     )
     fig.show()
@@ -1009,10 +1056,13 @@ def plot_hierarchical_abundance_sunbursts(classyfire_df, cf_hierarchy, group1, g
 ```python
 from io import StringIO
 
-classyfire_hierarchy = api.projects().get_canopus_classy_fire_data(project_info.project_id, 1)
+classyfire_hierarchy = api.projects().get_canopus_classy_fire_data(
+    project_info.project_id, 1
+)
 classyfire_hierarchy = pd.read_csv(StringIO(classyfire_hierarchy), sep="\t")
-plot_hierarchical_abundance_sunbursts(classyfire_df, classyfire_hierarchy, "Young Leaves",
-                                      "Old Leaves", 4)
+plot_hierarchical_abundance_sunbursts(
+    classyfire_df, classyfire_hierarchy, "Young Leaves", "Old Leaves", 4
+)
 ```
 
 ![Figure 3. Sunburst plots for comparing the abundance of ClassyFire classes predicted by CANOPUS in two groups](images/figure3.png)
@@ -1028,57 +1078,68 @@ The layering of classes follows the ClassyFire hierarchy. The color encodes abun
 def plot_bar(df, group1, group2, threshold=ABS_LOG2_FC_THRESHOLD, levels=None):
     sub = _with_plot_log2_fc(_filter(df, threshold, levels))
     colors = [COLOR_GROUP1 if v > 0 else COLOR_GROUP2 for v in sub["log2_fc"]]
-    fig = go.Figure(go.Bar(
-        x=sub["plot_log2_fc"], y=sub["name"],
-        orientation="h",
-        marker_color=colors,
-        customdata=sub["log2_fc"],
-        hovertemplate="%{y}<br>log2 FC: %{customdata:.2f}<br>plotted as: %{x:.2f}<extra></extra>"
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=sub["plot_log2_fc"],
+            y=sub["name"],
+            orientation="h",
+            marker_color=colors,
+            customdata=sub["log2_fc"],
+            hovertemplate="%{y}<br>log2 FC: %{customdata:.2f}<br>plotted as: %{x:.2f}<extra></extra>",
+        )
+    )
     fig.update_layout(
         title=_title(group1, group2, levels, threshold),
         xaxis_title="log2 FC (infinite values plotted at 2x max finite |log2 FC|)",
         xaxis=dict(zeroline=True, zerolinecolor="black", zerolinewidth=1),
         height=max(400, len(sub) * 20),
-        template="plotly_white"
+        template="plotly_white",
     )
     fig.show()
+
 
 def plot_strip(df, group1, group2, threshold=ABS_LOG2_FC_THRESHOLD, levels=None):
     sub = _with_plot_log2_fc(_filter(df, threshold, levels))
     fig = px.strip(
-        sub, x="plot_log2_fc", y="level",
+        sub,
+        x="plot_log2_fc",
+        y="level",
         color="enriched_in",
         hover_name="name",
         hover_data={"log2_fc": ":.2f", "plot_log2_fc": ":.2f"},
         color_discrete_map={group1: COLOR_GROUP1, group2: COLOR_GROUP2},
         category_orders={"level": sorted(sub["level"].unique())},
-        title=_title(group1, group2, levels, threshold)
+        title=_title(group1, group2, levels, threshold),
     )
     fig.update_layout(
         xaxis_title="log2 FC (infinite values plotted at 2x max finite |log2 FC|)",
         xaxis=dict(zeroline=True, zerolinecolor="black", zerolinewidth=1),
-        template="plotly_white"
+        template="plotly_white",
     )
     fig.show()
+
 
 def plot_sunburst(df, group1, group2, threshold=ABS_LOG2_FC_THRESHOLD, levels=None):
     """Sunburst where color encodes log2 fold change and slice size encodes total class
     abundance."""
     sub = _with_plot_log2_fc(_filter(df, threshold, levels))
     fig = px.sunburst(
-        sub, path=["level", "name"],
+        sub,
+        path=["level", "name"],
         values="totalAbundance",
         color="plot_log2_fc",
         color_continuous_scale="RdBu",
         color_continuous_midpoint=0,
-        hover_data={"log2_fc": ":.2f", "enriched_in": True, "leftAbundance": True, "rightAbundance": True},
-        title=_title(group1, group2, levels, threshold)
+        hover_data={
+            "log2_fc": ":.2f",
+            "enriched_in": True,
+            "leftAbundance": True,
+            "rightAbundance": True,
+        },
+        title=_title(group1, group2, levels, threshold),
     )
     fig.update_coloraxes(colorbar_title="log2 FC plotted")
-    fig.update_layout(
-        template="plotly_white"
-    )
+    fig.update_layout(template="plotly_white")
     fig.show()
 ```
 
@@ -1112,18 +1173,15 @@ This step verifies whether the compound classes annotated for rosmarinic acid fo
 canopus_result = api.features().get_canopus_prediction(
     project_info.project_id,
     rosmarinic_acid_base_feature.aligned_feature_id,
-    rosmarinic_acid_base_feature.top_annotations.formula_annotation
-        .formula_id
+    rosmarinic_acid_base_feature.top_annotations.formula_annotation.formula_id,
 )
 ```
 
 **39.** Extract annotated NPC and ClassyFire classes with probability > 50% and compare their enrichment direction.
 
 ```python
-ros_npc_classes = [
-    c.name for c in canopus_result.npc_classes if c.probability >= 0.5
-]
-npc_lookup = npc_df.set_index('name')['enriched_in'].to_dict()
+ros_npc_classes = [c.name for c in canopus_result.npc_classes if c.probability >= 0.5]
+npc_lookup = npc_df.set_index("name")["enriched_in"].to_dict()
 for cls_name in ros_npc_classes:
     direction = npc_lookup.get(cls_name)
     if direction is None:
@@ -1138,10 +1196,9 @@ for cls_name in ros_npc_classes:
 
 ```python
 ros_classyfire_classes = [
-    c.name for c in canopus_result.classy_fire_classes
-    if c.probability >= 0.5
+    c.name for c in canopus_result.classy_fire_classes if c.probability >= 0.5
 ]
-classyfire_lookup = classyfire_df.set_index('name')['enriched_in'].to_dict()
+classyfire_lookup = classyfire_df.set_index("name")["enriched_in"].to_dict()
 for cls_name in ros_classyfire_classes:
     direction = classyfire_lookup.get(cls_name)
     if direction is None:
@@ -1250,15 +1307,15 @@ Sample runs are assigned to mutually exclusive sample groups simultaneously (e.g
 Load the original (uncorrected) mapping file and diagnose the overlapping groups with the following code.
 
 ```python
-groups_buggy = parse_group_mapping(
-    f"{root_path}/other/group_mapping_rosemary.txt"
-)
+groups_buggy = parse_group_mapping(f"{root_path}/other/group_mapping_rosemary.txt")
+
 
 def are_groups_disjoint(*group_keys, groups):
     intersection = set(groups[group_keys[0]])
     for key in group_keys[1:]:
         intersection &= set(groups[key])
     return len(intersection) == 0
+
 
 def report_group_intersections(*group_keys, groups):
     value_to_groups = {}
@@ -1267,10 +1324,15 @@ def report_group_intersections(*group_keys, groups):
             value_to_groups.setdefault(value, []).append(key)
     return {v: g for v, g in value_to_groups.items() if len(g) > 1}
 
-print("Blanks ∩ Samples = ∅ :", are_groups_disjoint(
-    'GROUP_BLANKS', 'GROUP_SAMPLES', groups=groups_buggy))
-print("Young ∩ Old = ∅ :", are_groups_disjoint(
-    'GROUP_YOUNG', 'GROUP_OLD', groups=groups_buggy))
+
+print(
+    "Blanks ∩ Samples = ∅ :",
+    are_groups_disjoint("GROUP_BLANKS", "GROUP_SAMPLES", groups=groups_buggy),
+)
+print(
+    "Young ∩ Old = ∅ :",
+    are_groups_disjoint("GROUP_YOUNG", "GROUP_OLD", groups=groups_buggy),
+)
 ```
 
 Now identify the misassigned files and remove them from the incorrect group.
@@ -1278,19 +1340,22 @@ Now identify the misassigned files and remove them from the incorrect group.
 ```python
 import re
 
+
 def extract_z_values(filenames):
-    return [f"Z{m.group(1)}" for f in filenames
-            if (m := re.search(r'_Z(\d+)_', f))]
+    return [f"Z{m.group(1)}" for f in filenames if (m := re.search(r"_Z(\d+)_", f))]
+
 
 intersecting = report_group_intersections(
-    'GROUP_YOUNG', 'GROUP_OLD', groups=groups_buggy
+    "GROUP_YOUNG", "GROUP_OLD", groups=groups_buggy
 )
 for filename in intersecting:
-    groups_buggy['GROUP_Z1'].remove(filename)
-    groups_buggy['GROUP_YOUNG'].remove(filename)
+    groups_buggy["GROUP_Z1"].remove(filename)
+    groups_buggy["GROUP_YOUNG"].remove(filename)
 
-print("Young ∩ Old = ∅ after correction:",
-      are_groups_disjoint('GROUP_YOUNG', 'GROUP_OLD', groups=groups_buggy))
+print(
+    "Young ∩ Old = ∅ after correction:",
+    are_groups_disjoint("GROUP_YOUNG", "GROUP_OLD", groups=groups_buggy),
+)
 ```
 
 > **Note:** A corrected metadata file is available in the MassIVE archive under `updates/2026-03-25_lfnothias_1828a86c/metadata/group_mapping_rosemary_corrected.txt` and is used by default in Step 6.

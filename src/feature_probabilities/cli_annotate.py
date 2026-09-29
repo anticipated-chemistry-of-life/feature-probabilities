@@ -419,7 +419,9 @@ def annotate_batch(
         calibration_scores_seen += calibration_summary.annotations_scored
         processed_run_ids.append(result.run.run_id)
 
-    if export_path is not None and export_writer_name is not None:  # narrows for type-checkers
+    if (
+        export_path is not None and export_writer_name is not None
+    ):  # narrows for type-checkers
         _write_export(
             _export_rows(session, processed_run_ids, kde_model.kde_model_id),
             export_path,

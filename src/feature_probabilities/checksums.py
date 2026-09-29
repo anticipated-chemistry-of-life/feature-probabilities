@@ -23,7 +23,9 @@ import hashlib
 import json
 from typing import Protocol
 
-type JSONValue = str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
+type JSONValue = (
+    str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
+)
 
 
 class ToDictConvertible(Protocol):
