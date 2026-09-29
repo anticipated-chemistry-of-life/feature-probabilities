@@ -177,13 +177,7 @@ _EXPORTED_MGF_FIELDS = frozenset(
     }
 )
 
-#: Per-chunk spectra cap for SIRIUS's pre-picked import path. One chunk is
-#: the unit of both SIRIUS work and cache reuse (`run_cache`), and
-#: `generate_groundtruth` commits per chunk, so the chunk size is the
-#: checkpoint granularity: at a measured 0.81 s/spectrum, 1,000 spectra is
-#: ~13 min of recomputable work per failure, against ~6.7 h for the 30,000
-#: `ms2mol-evaluation` originally used.
-DEFAULT_SIRIUS_CHUNK_SIZE = 1_000
+DEFAULT_SIRIUS_CHUNK_SIZE = 10_000
 
 
 class MassSpecGymParseError(Exception):
@@ -226,7 +220,9 @@ def _require_float(row: pd.Series, field_name: str, *, identifier: str) -> float
         ) from exc
 
 
-def _parse_peak_array(row: pd.Series, field_name: str, *, identifier: str) -> np.ndarray:
+def _parse_peak_array(
+    row: pd.Series, field_name: str, *, identifier: str
+) -> np.ndarray:
     raw = _require_value(row, field_name, identifier=identifier)
     try:
         return np.array([float(value) for value in raw.split(",")], dtype=float)
