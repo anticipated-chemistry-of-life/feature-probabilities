@@ -15,6 +15,7 @@ model_*.pkl
 # Fitted simple densities + figures
 simple_*.pkl
 *.png
+!sirius_protocol/images/*.png
 cfmid_scores.parquet
 structure_identifications_all.parquet
 __marimo__/
