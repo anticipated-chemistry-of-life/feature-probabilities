@@ -149,7 +149,8 @@ class Molecule(Base):
     ``inchikey`` is the first-block (14-character) key exactly as SIRIUS's
     ``StructureCandidateFormula.inchiKey`` returns it -- no truncation step,
     since SIRIUS never returns a longer key. ``smiles`` is RDKit-canonicalized
-    with stereochemistry stripped before insert.
+    with stereochemistry stripped before insert, or stored verbatim when
+    RDKit can't parse it.
     """
 
     __tablename__ = "molecules"

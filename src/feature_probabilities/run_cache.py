@@ -23,7 +23,9 @@ actual rerun-avoidance behavior both `generate-groundtruth` and
 Each `molecules` row's `inchikey` is stored exactly as
 `StructureCandidateFormula.inchi_key` returns it (already first-block/14-
 character -- no truncation step), and `smiles` is RDKit-canonicalized with
-stereochemistry stripped before insert.
+stereochemistry stripped before insert -- or stored verbatim when RDKit
+can't parse it (SIRIUS's candidate databases contain valence-violating
+structures, e.g. a divalent `[Cl-]`), so one bad candidate never fails a run.
 
 Callers control the transaction: this module `flush`es (so newly-inserted
 rows get their autoincrement ids) but never `commit`s, matching
@@ -58,8 +60,7 @@ class RunCacheError(Exception):
 
     Covers invariants the real SIRIUS API always upholds (every structure
     candidate belongs to a feature the same project also reports) but a
-    misconfigured `FakeSirius` in a test can violate, and RDKit failing to
-    parse a structure candidate's reported SMILES.
+    misconfigured `FakeSirius` in a test can violate.
     """
 
 
@@ -99,14 +100,14 @@ class SiriusRunResult:
 def _canonical_smiles(smiles: str) -> str:
     """RDKit-canonicalized, stereochemistry-stripped form of `smiles`.
 
-    Raises:
-        RunCacheError: RDKit can't parse `smiles`.
+    Returns `smiles` unchanged when RDKit can't parse it: SIRIUS's candidate
+    databases contain chemically invalid structures (e.g. `C[Cl-]N`,
+    `C=BrC`), and rejecting them would discard every other candidate in
+    the run along with them.
     """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        raise RunCacheError(
-            f"RDKit could not parse structure candidate SMILES: {smiles!r}"
-        )
+        return smiles
     Chem.RemoveStereochemistry(mol)
     return Chem.MolToSmiles(mol, canonical=True)
 
@@ -298,8 +299,7 @@ def get_or_create_run(
 
     Raises:
         RunCacheError: a structure candidate's feature wasn't also reported
-            by `get_features`, or a candidate's SMILES can't be parsed by
-            RDKit.
+            by `get_features`.
     """
     input_checksum = input_file_checksum(request.input_file.read_bytes())
     import_checksum = import_params_checksum(request.import_params)

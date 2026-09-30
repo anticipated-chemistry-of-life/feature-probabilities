@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from PySirius import (
     AlignedFeature,
     JobSubmission,
@@ -21,7 +20,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from feature_probabilities.run_cache import (
-    RunCacheError,
     SiriusRunRequest,
     get_or_create_run,
 )
@@ -391,20 +389,41 @@ def test_newly_inserted_molecule_smiles_is_rdkit_canonicalized_and_stereo_stripp
         assert molecule.smiles == Chem.MolToSmiles(expected, canonical=True)
 
 
-def test_unparseable_smiles_raises_a_clear_error(tmp_path: Path) -> None:
+def test_unparseable_smiles_is_stored_verbatim_without_failing_the_run(
+    tmp_path: Path,
+) -> None:
+    """SIRIUS returns valence-violating candidates (e.g. a divalent `[Cl-]`).
+
+    One such candidate must not discard the run's other features and
+    candidates, so it is stored as SIRIUS reported it.
+    """
     input_file = _write_input_file(tmp_path)
     feature = _feature("feat-1", ion_mass=100.0)
+    bad_smiles = "C1CC(CCC1C[Cl-]N)C2CC(=O)NC2=O"
     fake = FakeSirius(
         canned_features={input_file: [feature]},
         canned_results={
             input_file: [
                 FeatureStructureCandidate(
                     feature=feature,
-                    candidate=_candidate("BADSMILESKEY01", smiles="not-a-smiles((("),
-                )
+                    candidate=_candidate("BADSMILESKEY01", smiles=bad_smiles),
+                ),
+                FeatureStructureCandidate(
+                    feature=feature,
+                    candidate=_candidate("ALANINEKEY0001", smiles="C[C@H](N)C(=O)O"),
+                ),
             ]
         },
     )
     engine = create_database(":memory:")
-    with Session(engine) as session, pytest.raises(RunCacheError):
-        get_or_create_run(session, fake, _request(tmp_path, input_file))
+    with Session(engine) as session:
+        result = get_or_create_run(session, fake, _request(tmp_path, input_file))
+        session.commit()
+
+        assert len(result.annotations) == 2
+        smiles_by_inchikey = {
+            molecule.inchikey: molecule.smiles
+            for molecule in session.scalars(select(Molecule))
+        }
+        assert smiles_by_inchikey["BADSMILESKEY01"] == bad_smiles
+        assert smiles_by_inchikey["ALANINEKEY0001"] == "CC(N)C(=O)O"

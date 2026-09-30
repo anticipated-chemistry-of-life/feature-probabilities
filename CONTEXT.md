@@ -13,7 +13,7 @@ A molecule SIRIUS/CSI:FingerID proposes as a possible identity for a feature, ca
 _Avoid_: molecule (see the distinct **Molecule** entry below — the two are not interchangeable), hit
 
 **Molecule**:
-The globally deduplicated, skeleton-level chemical identity a structure candidate resolves to: a first-block (14-character) InChIKey plus a canonical, stereochemistry-stripped 2D SMILES. Stored once regardless of how many features/structure candidates reference it. Both SIRIUS's candidate search and MassSpecGym's ground truth already operate at this granularity — neither ever exposes a longer, stereo-resolved key — so a Molecule never distinguishes stereoisomers of the same skeleton.
+The globally deduplicated, skeleton-level chemical identity a structure candidate resolves to: a first-block (14-character) InChIKey plus a canonical, stereochemistry-stripped 2D SMILES (or SIRIUS's SMILES verbatim when RDKit can't parse it — SIRIUS's candidate databases contain valence-violating structures). Stored once regardless of how many features/structure candidates reference it. Both SIRIUS's candidate search and MassSpecGym's ground truth already operate at this granularity — neither ever exposes a longer, stereo-resolved key — so a Molecule never distinguishes stereoisomers of the same skeleton.
 _Avoid_: structure candidate (that's the per-feature, scored occurrence; a Molecule is the shared, unscored identity)
 
 **Annotation**:
