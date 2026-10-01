@@ -1,10 +1,11 @@
 """``annotate``: the field-mzML batch CLI producing the feature-probability table.
 
 Issue #23's happy-path slice (given the shared TOML config (#11), a
-directory of new mzML files (``--mzml-dir``), and a metadata CSV
-(``--metadata-csv``), upserts the batch's ``species``/``extracts`` rows
-(#17) and runs every mzML file through the cache-aware SIRIUS pipeline
-(#19) with ``source_kind='field_mzml'``, the mzML's peak-picking
+directory of new mzML files (``--mzml-dir``), and a metadata CSV or TSV
+(``--metadata-csv``; ``.tsv`` files are tab-separated), upserts the batch's
+``species``/``extracts`` rows (#17) and runs every mzML file through the
+cache-aware SIRIUS pipeline (#19) with ``source_kind='field_mzml'``, the
+mzML's peak-picking
 (``LcmsSubmissionParameters``) parameters from ``config.sirius.import_params``,
 and the just-upserted file's ``extract_id``) plus issue #25's remaining CLI
 surface:
@@ -121,7 +122,7 @@ _EXPORT_COLUMNS = (
     "annotation_id",
     "feature_id",
     "external_feature_id",
-    "sample_code",
+    "sample_id",
     "ion_mass",
     "molecule_id",
     "inchikey",
@@ -268,7 +269,7 @@ def _export_rows(
             Annotation.annotation_id,
             Feature.feature_id,
             Feature.external_feature_id,
-            Extract.sample_code,
+            Extract.sample_id,
             Feature.ion_mass,
             Molecule.molecule_id,
             Molecule.inchikey,
@@ -334,7 +335,7 @@ def annotate_batch(
 
     Resolves the `kde_models` row to apply (`_resolve_kde_model`) once,
     up front. For each mzML file (processed in sorted-by-name order): looks
-    up its metadata row by filename/`sample_code`
+    up its metadata row by filename/`sample_id`
     (`find_metadata_row_for_mzml`), upserts the corresponding
     `species`/`extracts` rows (`upsert_metadata_row`), runs it through
     `run_cache.get_or_create_run` with `source_kind='field_mzml'`,
@@ -531,8 +532,8 @@ def _required_inputs(
     type=click.Path(path_type=Path),
     required=False,
     help=(
-        "CSV of species/extract metadata to upsert, keyed by sample_code "
-        "(--smoke-test default: config)."
+        "CSV (or tab-separated .tsv) of species/extract metadata to upsert, "
+        "keyed by sample_id (--smoke-test default: config)."
     ),
 )
 @click.option(

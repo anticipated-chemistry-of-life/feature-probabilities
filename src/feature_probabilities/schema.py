@@ -58,7 +58,7 @@ class Species(Base):
     species_id: Mapped[int] = mapped_column(
         sa.Integer, sa.Sequence("species_id_seq"), primary_key=True
     )
-    taxon_name: Mapped[str] = mapped_column(sa.String, unique=True)
+    taxon_scientific_name: Mapped[str] = mapped_column(sa.String, unique=True)
     ncbi_taxid: Mapped[int | None] = mapped_column(sa.Integer)
     family: Mapped[str | None] = mapped_column(sa.String)
 
@@ -71,7 +71,7 @@ class Extract(Base):
     extract_id: Mapped[int] = mapped_column(
         sa.Integer, sa.Sequence("extract_id_seq"), primary_key=True
     )
-    sample_code: Mapped[str] = mapped_column(sa.String, unique=True)
+    sample_id: Mapped[str] = mapped_column(sa.String, unique=True)
     species_id: Mapped[int] = mapped_column(sa.ForeignKey("species.species_id"))
     organ: Mapped[str | None] = mapped_column(sa.String)
     #: Whatever additional columns a real metadata CSV turns out to carry,

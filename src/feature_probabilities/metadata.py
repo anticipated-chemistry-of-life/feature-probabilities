@@ -1,4 +1,4 @@
-"""Species/extract metadata upsert from a user-supplied CSV.
+"""Species/extract metadata upsert from a user-supplied CSV or TSV.
 
 `annotate` always requires and upserts a metadata CSV on every invocation
 (issue #9's user story 17) rather than needing a separate one-time ingestion
@@ -6,10 +6,11 @@ step -- there is no dedicated ingestion executable (issue #9's Out of Scope).
 This module is standalone from SIRIUS entirely: it only touches the
 `species`/`extracts` tables (`schema.py`) via a real SQLAlchemy `Session`.
 
-The CSV's columns map onto the two tables as follows:
+The table is comma-separated, or tab-separated when its filename ends in
+`.tsv` (case-insensitive). Its columns map onto the two tables as follows:
 
-- `sample_code` (required) -- the upsert key, `extracts.sample_code`.
-- `taxon_name` (required) -- `species.taxon_name`, the species upsert key.
+- `sample_id` (required) -- the upsert key, `extracts.sample_id`.
+- `taxon_scientific_name` (required) -- `species.taxon_scientific_name`, the species upsert key.
 - `ncbi_taxid`, `family` (optional) -- the rest of `species`.
 - `organ` (optional) -- `extracts.organ`.
 - every other column -- captured verbatim into `extracts.extra_metadata`
@@ -36,24 +37,27 @@ from feature_probabilities.schema import Extract, Species
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
-#: The upsert key column, both for `extracts.sample_code` and for matching
+#: The upsert key column, both for `extracts.sample_id` and for matching
 #: an mzML filename against a CSV row.
-SAMPLE_CODE_COLUMN = "sample_code"
+SAMPLE_ID_COLUMN = "sample_id"
 
 #: Columns that map directly onto `species` columns (besides the species
-#: upsert key, `taxon_name`, which is also required -- see `REQUIRED_COLUMNS`).
-SPECIES_COLUMNS = ("taxon_name", "ncbi_taxid", "family")
+#: upsert key, `taxon_scientific_name`, which is also required -- see `REQUIRED_COLUMNS`).
+SPECIES_COLUMNS = ("taxon_scientific_name", "ncbi_taxid", "family")
 
 #: Columns that map directly onto `extracts` columns, besides
-#: `SAMPLE_CODE_COLUMN` itself.
+#: `SAMPLE_ID_COLUMN` itself.
 EXTRACT_COLUMNS = ("organ",)
 
 #: Every column with a fixed destination. Anything else in the CSV lands in
 #: `extracts.extra_metadata` instead of requiring a fixed schema.
-PINNED_COLUMNS = (SAMPLE_CODE_COLUMN, *SPECIES_COLUMNS, *EXTRACT_COLUMNS)
+PINNED_COLUMNS = (SAMPLE_ID_COLUMN, *SPECIES_COLUMNS, *EXTRACT_COLUMNS)
 
 #: Columns a row must carry a non-blank value for; anything else is optional.
-REQUIRED_COLUMNS = (SAMPLE_CODE_COLUMN, "taxon_name")
+REQUIRED_COLUMNS = (SAMPLE_ID_COLUMN, "taxon_scientific_name")
+
+#: Filename suffixes (lowercased) read as tab-separated; anything else is CSV.
+TSV_SUFFIXES = frozenset({".tsv"})
 
 
 class MetadataError(Exception):
@@ -69,7 +73,7 @@ def _clean(value: object) -> str | None:
 
 
 def _parse_optional_int(
-    value: str | None, *, column: str, sample_code: str, csv_path: Path
+    value: str | None, *, column: str, sample_id: str, csv_path: Path
 ) -> int | None:
     if value is None:
         return None
@@ -77,7 +81,7 @@ def _parse_optional_int(
         return int(value)
     except ValueError as exc:
         raise MetadataError(
-            f"Metadata CSV {csv_path}: sample_code={sample_code!r} has a "
+            f"Metadata CSV {csv_path}: sample_id={sample_id!r} has a "
             f"non-integer '{column}' value: {value!r}"
         ) from exc
 
@@ -94,21 +98,23 @@ def _extra_metadata(row: pd.Series) -> dict[str, str] | None:
 
 
 def load_metadata_csv(csv_path: Path | str) -> pd.DataFrame:
-    """Parse a metadata CSV, validating that every required column is present.
+    """Parse a metadata CSV/TSV, validating that every required column is present.
 
+    The delimiter is chosen by suffix: tab for `TSV_SUFFIXES`, comma otherwise.
     Every cell is read as a string (rather than pandas' inferred numeric/bool
     dtypes) so extra columns land in `extra_metadata` exactly as written and
     `ncbi_taxid` parsing stays this module's own, explicit responsibility.
 
     Raises:
-        MetadataError: `csv_path` doesn't exist, or the CSV is missing one of
+        MetadataError: `csv_path` doesn't exist, or the table is missing one of
             `REQUIRED_COLUMNS`.
     """
     path = Path(csv_path)
     if not path.is_file():
         raise MetadataError(f"Metadata CSV not found: {path}")
 
-    df = pd.read_csv(path, dtype=str)
+    sep = "\t" if path.suffix.lower() in TSV_SUFFIXES else ","
+    df = pd.read_csv(path, dtype=str, sep=sep)
     missing = [column for column in REQUIRED_COLUMNS if column not in df.columns]
     if missing:
         raise MetadataError(
@@ -120,27 +126,27 @@ def load_metadata_csv(csv_path: Path | str) -> pd.DataFrame:
 def find_metadata_row_for_mzml(
     df: pd.DataFrame, mzml_filename: str | Path
 ) -> pd.Series:
-    """Find the metadata row for `mzml_filename`, matched by `sample_code`.
+    """Find the metadata row for `mzml_filename`, matched by `sample_id`.
 
     Matches `Path(mzml_filename).stem` -- the filename without directory or
-    extension -- against `sample_code` exactly, so both a bare sample code
+    extension -- against `sample_id` exactly, so both a bare sample code
     (e.g. `"EX-001"`) and a real mzML filename (e.g. `"EX-001.mzML"`) resolve
     the same row.
 
     Raises:
-        MetadataError: no row's `sample_code` matches, or more than one does
+        MetadataError: no row's `sample_id` matches, or more than one does
             (an ambiguous CSV, which would otherwise silently pick one).
     """
     stem = Path(mzml_filename).stem
-    matches = df.index[df[SAMPLE_CODE_COLUMN].map(_clean) == stem]
+    matches = df.index[df[SAMPLE_ID_COLUMN].map(_clean) == stem]
     if len(matches) == 0:
         raise MetadataError(
             f"No metadata row found for mzML file {mzml_filename!r} "
-            f"(expected a row with sample_code={stem!r})"
+            f"(expected a row with sample_id={stem!r})"
         )
     if len(matches) > 1:
         raise MetadataError(
-            f"Metadata CSV has {len(matches)} rows with sample_code={stem!r}; "
+            f"Metadata CSV has {len(matches)} rows with sample_id={stem!r}; "
             f"expected exactly one for mzML file {mzml_filename!r}"
         )
     return df.loc[matches[0]]
@@ -152,7 +158,7 @@ def _get_or_create[T: (Species, Extract)](
     """Fetch the row matching `filters`, or insert-and-return a fresh one.
 
     Generic over `Species`/`Extract`: both are upserted by looking up on
-    their unique key (`taxon_name`/`sample_code` respectively) and creating
+    their unique key (`taxon_scientific_name`/`sample_id` respectively) and creating
     a new row only on a miss -- the shared shape both `_upsert_species` and
     `_upsert_extract` build on.
     """
@@ -166,17 +172,19 @@ def _get_or_create[T: (Species, Extract)](
 
 def _upsert_species(
     session: Session,
-    taxon_name: str,
+    taxon_scientific_name: str,
     row: pd.Series,
     *,
-    sample_code: str,
+    sample_id: str,
     csv_path: Path,
 ) -> Species:
-    species = _get_or_create(session, Species, taxon_name=taxon_name)
+    species = _get_or_create(
+        session, Species, taxon_scientific_name=taxon_scientific_name
+    )
     species.ncbi_taxid = _parse_optional_int(
         _clean(row.get("ncbi_taxid")),
         column="ncbi_taxid",
-        sample_code=sample_code,
+        sample_id=sample_id,
         csv_path=csv_path,
     )
     species.family = _clean(row.get("family"))
@@ -185,9 +193,9 @@ def _upsert_species(
 
 
 def _upsert_extract(
-    session: Session, sample_code: str, species: Species, row: pd.Series
+    session: Session, sample_id: str, species: Species, row: pd.Series
 ) -> Extract:
-    extract = _get_or_create(session, Extract, sample_code=sample_code)
+    extract = _get_or_create(session, Extract, sample_id=sample_id)
     extract.species_id = species.species_id
     extract.organ = _clean(row.get("organ"))
     extract.extra_metadata = _extra_metadata(row)
@@ -198,9 +206,9 @@ def _upsert_extract(
 def upsert_metadata_row(
     session: Session, row: pd.Series, *, csv_path: Path | str = "<metadata row>"
 ) -> Extract:
-    """Upsert one metadata row's `species`/`extracts` rows, keyed by `sample_code`.
+    """Upsert one metadata row's `species`/`extracts` rows, keyed by `sample_id`.
 
-    Inserts if no row with this `sample_code` (resp. `taxon_name`) exists
+    Inserts if no row with this `sample_id` (resp. `taxon_scientific_name`) exists
     yet; otherwise updates the existing row in place -- re-running with
     unchanged row content is a no-op, and a changed value overwrites the
     existing row rather than inserting a second one.
@@ -210,29 +218,29 @@ def upsert_metadata_row(
     `find_metadata_row_for_mzml`) so a bad row still names its source file.
 
     Raises:
-        MetadataError: the row has no `sample_code`, no `taxon_name` (so it
+        MetadataError: the row has no `sample_id`, no `taxon_scientific_name` (so it
             can't be resolved to a `species` row), or an unparseable
             `ncbi_taxid`.
     """
     path = Path(csv_path)
-    sample_code = _clean(row.get(SAMPLE_CODE_COLUMN))
-    if sample_code is None:
+    sample_id = _clean(row.get(SAMPLE_ID_COLUMN))
+    if sample_id is None:
         raise MetadataError(
             f"Metadata CSV {path}: row {int(row.name) + 2} is missing a "
-            f"'{SAMPLE_CODE_COLUMN}'"
+            f"'{SAMPLE_ID_COLUMN}'"
         )
 
-    taxon_name = _clean(row.get("taxon_name"))
-    if taxon_name is None:
+    taxon_scientific_name = _clean(row.get("taxon_scientific_name"))
+    if taxon_scientific_name is None:
         raise MetadataError(
-            f"Metadata CSV {path}: sample_code={sample_code!r} has no 'taxon_name', "
+            f"Metadata CSV {path}: sample_id={sample_id!r} has no 'taxon_scientific_name', "
             f"so it can't be resolved to a species row"
         )
 
     species = _upsert_species(
-        session, taxon_name, row, sample_code=sample_code, csv_path=path
+        session, taxon_scientific_name, row, sample_id=sample_id, csv_path=path
     )
-    return _upsert_extract(session, sample_code, species, row)
+    return _upsert_extract(session, sample_id, species, row)
 
 
 def upsert_metadata_csv(session: Session, csv_path: Path | str) -> list[Extract]:

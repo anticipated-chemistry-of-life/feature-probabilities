@@ -51,11 +51,11 @@ required_sirius_version = "6.0.0"
 massspecgym_revision = "abc123"
 """
 
-BASE_CSV = """sample_code,taxon_name,ncbi_taxid,family,organ
+BASE_CSV = """sample_id,taxon_scientific_name,ncbi_taxid,family,organ
 EX-001,Panthera leo,9689,Felidae,leaf
 """
 
-TWO_EXTRACT_CSV = """sample_code,taxon_name,ncbi_taxid,family,organ
+TWO_EXTRACT_CSV = """sample_id,taxon_scientific_name,ncbi_taxid,family,organ
 EX-001,Panthera leo,9689,Felidae,leaf
 EX-002,Panthera tigris,9694,Felidae,root
 """
@@ -208,10 +208,10 @@ def test_full_run_populates_expected_rows_through_the_fake_wrapper(
 
     with _open_db(db_path) as session:
         species = session.scalars(select(Species)).one()
-        assert species.taxon_name == "Panthera leo"
+        assert species.taxon_scientific_name == "Panthera leo"
 
         extract = session.scalars(select(Extract)).one()
-        assert extract.sample_code == "EX-001"
+        assert extract.sample_id == "EX-001"
         assert extract.species_id == species.species_id
 
         runs = session.scalars(select(SiriusRun)).all()
@@ -439,7 +439,7 @@ def test_multiple_mzml_files_each_get_their_own_run_and_extract(
 
     with _open_db(db_path) as session:
         extracts = session.scalars(select(Extract)).all()
-        assert {extract.sample_code for extract in extracts} == {"EX-001", "EX-002"}
+        assert {extract.sample_id for extract in extracts} == {"EX-001", "EX-002"}
 
         runs = session.scalars(select(SiriusRun)).all()
         assert len(runs) == 2
@@ -589,7 +589,7 @@ def test_one_file_failure_is_reported_others_succeed_and_exit_is_nonzero(
         runs = session.scalars(select(SiriusRun)).all()
         assert len(runs) == 1
         extract = session.scalars(
-            select(Extract).where(Extract.sample_code == "EX-001")
+            select(Extract).where(Extract.sample_id == "EX-001")
         ).one()
         assert runs[0].extract_id == extract.extract_id
         assert len(session.scalars(select(CalibrationScore)).all()) == 1
@@ -645,7 +645,7 @@ def test_export_writes_one_csv_row_per_annotation(
     df = pd.read_csv(export_path)
     assert len(df) == 1
     row = df.iloc[0]
-    assert row["sample_code"] == "EX-001"
+    assert row["sample_id"] == "EX-001"
     assert row["external_feature_id"] == "fake-feature-1"
     assert row["inchikey"] == "AAAAAAAAAAAAAA"
     assert row["csi_score"] == pytest.approx(-100.0)
@@ -670,7 +670,7 @@ def test_export_writes_parquet_when_given_a_parquet_extension(
     assert result.exit_code == 0, result.output
     df = pd.read_parquet(export_path)
     assert len(df) == 1
-    assert df.iloc[0]["sample_code"] == "EX-001"
+    assert df.iloc[0]["sample_id"] == "EX-001"
 
 
 def test_export_rejects_an_unsupported_file_extension(
@@ -712,7 +712,7 @@ def test_export_only_includes_successfully_processed_files(
 
     assert result.exit_code != 0
     df = pd.read_csv(export_path)
-    assert list(df["sample_code"]) == ["EX-001"]
+    assert list(df["sample_id"]) == ["EX-001"]
 
 
 SMOKE_TEST_TOML = """
@@ -767,7 +767,7 @@ def test_smoke_test_runs_the_configured_input_into_the_smoke_db_and_exports(
 
     assert result.exit_code == 0, result.output
     assert not db_path.exists()
-    assert list(pd.read_csv(smoke_export_path)["sample_code"]) == ["EX-001"]
+    assert list(pd.read_csv(smoke_export_path)["sample_id"]) == ["EX-001"]
     with _open_db(smoke_db_path) as session:
         [run] = session.scalars(select(SiriusRun)).all()
         assert (run.ionization_mode, run.instrument_type) == ("negative", "QTOF")
@@ -795,7 +795,7 @@ def test_smoke_test_explicit_flags_override_its_configured_input(
 
     assert result.exit_code == 0, result.output
     assert not smoke_export_path.exists()
-    assert list(pd.read_csv(other_export_path)["sample_code"]) == ["EX-002"]
+    assert list(pd.read_csv(other_export_path)["sample_id"]) == ["EX-002"]
     with _open_db(smoke_db_path) as session:
         [run] = session.scalars(select(SiriusRun)).all()
         assert (run.ionization_mode, run.instrument_type) == ("positive", "Orbitrap")

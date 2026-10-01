@@ -46,12 +46,14 @@ def _insert_full_graph(session: Session) -> dict[str, int]:
     Returns the assigned primary keys so callers can build on top of a known-
     good baseline (e.g. to test a *second* conflicting insert).
     """
-    species = Species(taxon_name="Panthera leo", ncbi_taxid=9689, family="Felidae")
+    species = Species(
+        taxon_scientific_name="Panthera leo", ncbi_taxid=9689, family="Felidae"
+    )
     session.add(species)
     session.flush()
 
     extract = Extract(
-        sample_code="EX-001",
+        sample_id="EX-001",
         species_id=species.species_id,
         organ="leaf",
         extra_metadata={"collector": "field team A"},
@@ -148,7 +150,7 @@ def test_create_database_is_idempotent_and_preserves_existing_data(
     db_path = tmp_path / "database.duckdb"
     engine = create_database(db_path)
     with Session(engine) as session:
-        session.add(Species(taxon_name="Panthera leo"))
+        session.add(Species(taxon_scientific_name="Panthera leo"))
         session.commit()
     engine.dispose()
 
@@ -179,27 +181,27 @@ def test_inserting_one_valid_row_per_table_succeeds() -> None:
         assert calibration_score.score == pytest.approx(0.42)
 
 
-def test_duplicate_taxon_name_is_rejected() -> None:
+def test_duplicate_taxon_scientific_name_is_rejected() -> None:
     engine = create_database(":memory:")
     with Session(engine) as session:
-        session.add(Species(taxon_name="Panthera leo"))
+        session.add(Species(taxon_scientific_name="Panthera leo"))
         session.commit()
 
-        session.add(Species(taxon_name="Panthera leo"))
+        session.add(Species(taxon_scientific_name="Panthera leo"))
         with pytest.raises(sa.exc.IntegrityError):
             session.commit()
 
 
-def test_duplicate_sample_code_is_rejected() -> None:
+def test_duplicate_sample_id_is_rejected() -> None:
     engine = create_database(":memory:")
     with Session(engine) as session:
-        species = Species(taxon_name="Panthera leo")
+        species = Species(taxon_scientific_name="Panthera leo")
         session.add(species)
         session.flush()
-        session.add(Extract(sample_code="EX-001", species_id=species.species_id))
+        session.add(Extract(sample_id="EX-001", species_id=species.species_id))
         session.commit()
 
-        session.add(Extract(sample_code="EX-001", species_id=species.species_id))
+        session.add(Extract(sample_id="EX-001", species_id=species.species_id))
         with pytest.raises(sa.exc.IntegrityError):
             session.commit()
 
@@ -269,10 +271,10 @@ def test_sirius_run_extract_id_accepts_null_for_ground_truth_runs() -> None:
 def test_sirius_run_extract_id_accepts_a_valid_fk_for_field_runs() -> None:
     engine = create_database(":memory:")
     with Session(engine) as session:
-        species = Species(taxon_name="Panthera leo")
+        species = Species(taxon_scientific_name="Panthera leo")
         session.add(species)
         session.flush()
-        extract = Extract(sample_code="EX-001", species_id=species.species_id)
+        extract = Extract(sample_id="EX-001", species_id=species.species_id)
         session.add(extract)
         session.flush()
 
