@@ -10,7 +10,8 @@ Each ``sirius_runs`` row is keyed by three sha256 checksums:
   object.
 - :func:`analysis_params_checksum` — the canonical JSON of the SIRIUS
   ``JobSubmission`` object, which already serializes every SIRIUS analysis
-  parameter.
+  parameter, plus the feature-quality filter selecting which imported
+  features that job runs on (field runs only).
 
 This module operates purely on bytes and plain ``to_dict``-shaped objects: it
 imports neither DuckDB nor PySirius, so it can be exercised without either
@@ -21,7 +22,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 type JSONValue = (
     str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
@@ -66,20 +70,34 @@ def import_params_checksum(params: ToDictConvertible | None) -> str | None:
 _NON_IDENTIFYING_ANALYSIS_KEYS = frozenset({"recompute"})
 
 
-def analysis_params_checksum(params: ToDictConvertible) -> str:
+#: Key the feature-quality filter is stored under in the checksummed payload.
+#: Not a `JobSubmission` field, so it can never collide with one.
+_ANNOTATED_QUALITIES_KEY = "annotated_qualities"
+
+
+def analysis_params_checksum(
+    params: ToDictConvertible, annotated_qualities: Collection[str] | None = None
+) -> str:
     """Sha256 hex digest of a ``JobSubmission``-shaped object.
 
     Excludes :data:`_NON_IDENTIFYING_ANALYSIS_KEYS`, so two submissions that
     differ only in `recompute` -- which produce identical results -- share one
     cache identity.
+
+    `annotated_qualities` are the `DataQuality` values a run restricts its
+    analysis job to. A different filter annotates a different feature set,
+    so it is part of the identity; `None` (no filter, every imported feature
+    analysed) leaves the payload -- and so every existing checksum --
+    unchanged.
     """
-    return _canonical_json_checksum(
-        {
-            key: value
-            for key, value in params.to_dict().items()
-            if key not in _NON_IDENTIFYING_ANALYSIS_KEYS
-        }
-    )
+    payload = {
+        key: value
+        for key, value in params.to_dict().items()
+        if key not in _NON_IDENTIFYING_ANALYSIS_KEYS
+    }
+    if annotated_qualities is not None:
+        payload[_ANNOTATED_QUALITIES_KEY] = sorted(annotated_qualities)
+    return _canonical_json_checksum(payload)
 
 
 def _canonical_json_checksum(payload: dict[str, JSONValue]) -> str:
