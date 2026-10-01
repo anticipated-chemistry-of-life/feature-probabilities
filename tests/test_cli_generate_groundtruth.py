@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,56 @@ def _write_config(tmp_path: Path, db_path: Path) -> Path:
     config_path = tmp_path / "config.toml"
     config_path.write_text(CONFIG_TOML.format(db_path=db_path))
     return config_path
+
+
+SMOKE_TEST_TOML = """
+[smoke_test]
+db_path = "{smoke_db_path}"
+kde_output_path = "unused-smoke-model.pkl"
+spectra_per_instrument_type = {spectra_per_instrument_type}
+mzml_dir = "unused-smoke-mzml-dir"
+metadata_csv = "unused-smoke-metadata.csv"
+ionization_mode = "positive"
+instrument_type = "Orbitrap"
+export_path = "unused-smoke-export.csv"
+"""
+
+
+def _write_smoke_config(
+    tmp_path: Path,
+    *,
+    db_path: Path,
+    smoke_db_path: Path,
+    spectra_per_instrument_type: int = 2,
+) -> Path:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        CONFIG_TOML.format(db_path=db_path)
+        + SMOKE_TEST_TOML.format(
+            smoke_db_path=smoke_db_path,
+            spectra_per_instrument_type=spectra_per_instrument_type,
+        )
+    )
+    return config_path
+
+
+@dataclass(slots=True)
+class _ContentRecordingFakeSirius(FakeSirius):
+    """A `FakeSirius` that also records which spectra each imported MGF held.
+
+    The CLI deletes its chunk files when it exits, so the only place to see
+    what was sent to SIRIUS is at `import_spectra` time.
+    """
+
+    imported_feature_ids: dict[str, list[str]] = field(default_factory=dict, init=False)
+
+    def import_spectra(self, spectra_file: Path, params: object = None) -> None:
+        FakeSirius.import_spectra(self, spectra_file, params)
+        self.imported_feature_ids[Path(spectra_file).name] = [
+            line.split("=", 1)[1]
+            for line in Path(spectra_file).read_text().splitlines()
+            if line.upper().startswith("FEATURE_ID=")
+        ]
 
 
 def _row(
@@ -546,3 +597,130 @@ def test_blank_instrument_type_rows_are_excluded_by_a_specific_instrument_type_f
         runs = session.scalars(select(SiriusRun)).all()
         assert len(runs) == 1
         assert runs[0].instrument_type == "Orbitrap"
+
+
+def test_smoke_test_sends_only_the_first_n_spectra_per_instrument_type_to_the_smoke_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("orbi-1", instrument_type="Orbitrap"),
+            _row("qtof-1", instrument_type="QTOF"),
+            _row("orbi-2", instrument_type="Orbitrap"),
+            _row("orbi-3", instrument_type="Orbitrap"),
+            _row("qtof-2", instrument_type="QTOF"),
+            _row("qtof-3", instrument_type="QTOF"),
+        ],
+    )
+    canned = _fake_sirius_for("msg-1", "AAAAAAAAAAAAAA")
+    fake = _ContentRecordingFakeSirius(
+        default_features=canned.default_features,
+        default_results=canned.default_results,
+    )
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    smoke_db_path = tmp_path / "db" / "smoke_test" / "database.duckdb"
+    config_path = _write_smoke_config(
+        tmp_path, db_path=db_path, smoke_db_path=smoke_db_path
+    )
+
+    result = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
+
+    assert result.exit_code == 0, result.output
+    assert fake.imported_feature_ids == {
+        "orbitrap_0.mgf": ["orbi-1", "orbi-2"],
+        "qtof_0.mgf": ["qtof-1", "qtof-2"],
+    }
+    assert not db_path.exists()
+    with _open_db(smoke_db_path) as session:
+        runs = session.scalars(select(SiriusRun)).all()
+        assert {run.instrument_type for run in runs} == {"Orbitrap", "QTOF"}
+
+
+def test_smoke_test_starts_from_an_empty_smoke_db_every_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rerun must exercise SIRIUS and persistence again, not hit the cache."""
+    tsv_path = _write_tsv(tmp_path, [_row("msg-1")])
+    fake = _fake_sirius_for("msg-1", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    smoke_db_path = tmp_path / "smoke" / "database.duckdb"
+    config_path = _write_smoke_config(
+        tmp_path, db_path=tmp_path / "database.duckdb", smoke_db_path=smoke_db_path
+    )
+
+    first = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
+    assert first.exit_code == 0, first.output
+    second = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
+
+    assert second.exit_code == 0, second.output
+    assert len(fake.run_calls) == 2
+    with _open_db(smoke_db_path) as session:
+        assert len(session.scalars(select(SiriusRun)).all()) == 1
+
+
+def test_smoke_test_refuses_a_smoke_db_that_is_the_real_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tsv_path = _write_tsv(tmp_path, [_row("msg-1")])
+    fake = _fake_sirius_for("msg-1", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "database.duckdb"
+    real_run = CliRunner().invoke(
+        main, ["--config", str(_write_config(tmp_path, db_path))]
+    )
+    assert real_run.exit_code == 0, real_run.output
+    config_path = _write_smoke_config(
+        tmp_path,
+        db_path=db_path,
+        smoke_db_path=tmp_path / "." / "database.duckdb",
+    )
+
+    result = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
+
+    assert result.exit_code != 0
+    assert "same file" in result.output
+    assert len(fake.run_calls) == 1
+    with _open_db(db_path) as session:
+        assert len(session.scalars(select(SiriusRun)).all()) == 1
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [["--db", "other.duckdb"], ["--instrument-type", "all"]],
+    ids=["db", "instrument-type"],
+)
+def test_smoke_test_rejects_flags_that_would_redirect_or_narrow_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_args: list[str]
+) -> None:
+    tsv_path = _write_tsv(tmp_path, [_row("msg-1")])
+    fake = _fake_sirius_for("msg-1", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+    config_path = _write_smoke_config(
+        tmp_path,
+        db_path=tmp_path / "database.duckdb",
+        smoke_db_path=tmp_path / "smoke.duckdb",
+    )
+
+    result = CliRunner().invoke(
+        main, ["--config", str(config_path), "--smoke-test", *extra_args]
+    )
+
+    assert result.exit_code == 2
+    assert extra_args[0] in result.output
+    assert fake.run_calls == []
+
+
+def test_smoke_test_without_a_smoke_test_section_fails_with_a_clear_message(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(tmp_path, tmp_path / "database.duckdb")
+
+    result = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
+
+    assert result.exit_code != 0
+    assert "[smoke_test]" in result.output

@@ -713,3 +713,124 @@ def test_export_only_includes_successfully_processed_files(
     assert result.exit_code != 0
     df = pd.read_csv(export_path)
     assert list(df["sample_code"]) == ["EX-001"]
+
+
+SMOKE_TEST_TOML = """
+[smoke_test]
+db_path = "{smoke_db_path}"
+kde_output_path = "unused-smoke-model.pkl"
+spectra_per_instrument_type = 2
+mzml_dir = "{mzml_dir}"
+metadata_csv = "{metadata_csv}"
+ionization_mode = "negative"
+instrument_type = "QTOF"
+export_path = "{export_path}"
+"""
+
+
+def _write_smoke_setup(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """A config whose `[smoke_test]` points at its own mzML dir, CSV, DB, and export.
+
+    Returns `(config_path, db_path, smoke_db_path, smoke_export_path)`.
+    """
+    smoke_dir = tmp_path / "smoke"
+    smoke_dir.mkdir()
+    mzml_dir = _write_mzml_dir(smoke_dir, ["EX-001.mzML"])
+    csv_path = _write_csv(smoke_dir)
+    db_path = tmp_path / "database.duckdb"
+    smoke_db_path = smoke_dir / "database.duckdb"
+    smoke_export_path = smoke_dir / "feature_probabilities.csv"
+    config_path = _write_config(tmp_path, db_path)
+    with config_path.open("a") as handle:
+        handle.write(
+            SMOKE_TEST_TOML.format(
+                smoke_db_path=smoke_db_path,
+                mzml_dir=mzml_dir,
+                metadata_csv=csv_path,
+                export_path=smoke_export_path,
+            )
+        )
+    return config_path, db_path, smoke_db_path, smoke_export_path
+
+
+def test_smoke_test_runs_the_configured_input_into_the_smoke_db_and_exports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _fake_sirius_for()
+    _patch_seams(monkeypatch, fake=fake)
+    config_path, db_path, smoke_db_path, smoke_export_path = _write_smoke_setup(
+        tmp_path
+    )
+    _seed_kde_model(smoke_db_path, tmp_path / "smoke-kde.pkl")
+
+    result = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
+
+    assert result.exit_code == 0, result.output
+    assert not db_path.exists()
+    assert list(pd.read_csv(smoke_export_path)["sample_code"]) == ["EX-001"]
+    with _open_db(smoke_db_path) as session:
+        [run] = session.scalars(select(SiriusRun)).all()
+        assert (run.ionization_mode, run.instrument_type) == ("negative", "QTOF")
+
+
+def test_smoke_test_explicit_flags_override_its_configured_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _fake_sirius_for()
+    _patch_seams(monkeypatch, fake=fake)
+    config_path, _, smoke_db_path, smoke_export_path = _write_smoke_setup(tmp_path)
+    _seed_kde_model(smoke_db_path, tmp_path / "smoke-kde.pkl")
+    other_mzml_dir = _write_mzml_dir(tmp_path, ["EX-002.mzML"])
+    other_csv_path = _write_csv(tmp_path, TWO_EXTRACT_CSV)
+    other_export_path = tmp_path / "other.csv"
+
+    result = _invoke(
+        config_path,
+        other_mzml_dir,
+        other_csv_path,
+        "--smoke-test",
+        "--export",
+        str(other_export_path),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not smoke_export_path.exists()
+    assert list(pd.read_csv(other_export_path)["sample_code"]) == ["EX-002"]
+    with _open_db(smoke_db_path) as session:
+        [run] = session.scalars(select(SiriusRun)).all()
+        assert (run.ionization_mode, run.instrument_type) == ("positive", "Orbitrap")
+
+
+def test_smoke_test_rejects_the_db_flag(tmp_path: Path) -> None:
+    config_path, *_ = _write_smoke_setup(tmp_path)
+
+    result = CliRunner().invoke(
+        main,
+        ["--config", str(config_path), "--smoke-test", "--db", "other.duckdb"],
+    )
+
+    assert result.exit_code == 2
+    assert "--db" in result.output
+
+
+def test_smoke_test_without_a_kde_model_points_at_the_smoke_fit_kde(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_seams(monkeypatch, fake=_fake_sirius_for())
+    config_path, *_ = _write_smoke_setup(tmp_path)
+
+    result = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
+
+    assert result.exit_code != 0
+    assert "fit-kde --smoke-test" in result.output
+
+
+def test_without_smoke_test_a_missing_input_flag_is_reported_before_the_config(
+    tmp_path: Path,
+) -> None:
+    result = CliRunner().invoke(
+        main, ["--config", str(tmp_path / "does-not-exist.toml")]
+    )
+
+    assert result.exit_code == 2
+    assert "--mzml-dir" in result.output

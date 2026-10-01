@@ -22,6 +22,22 @@ massspecgym_revision = "d2e86d0c3bd905a6d578c0dd6053ed2bd41f9c2a"
 # artifact to; overridable per-run via --output. See issue #22.
 kde_output_path = "models/kde_model.pkl"
 
+# `--smoke-test` mode of every CLI: a small, isolated end-to-end run for
+# iterating on the pipeline. `generate-groundtruth --smoke-test` deletes and
+# recreates `db_path` on every run, so it must never be the real db_path
+# (enforced). `annotate --smoke-test` defaults its inputs and export to the
+# values below; any explicitly passed flag still wins.
+[smoke_test]
+db_path = "db/smoke_test/database.duckdb"
+kde_output_path = "models/smoke_test/kde_model.pkl"
+# First N spectra of each instrument type (Orbitrap, QTOF), in TSV order.
+spectra_per_instrument_type = 500
+mzml_dir = "data/smoke_test"
+metadata_csv = "data/smoke_test/metadata.csv"
+ionization_mode = "positive"
+instrument_type = "Orbitrap"
+export_path = "db/smoke_test/feature_probabilities.csv"
+
 [sirius.analysis_params]
 # SIRIUS `JobSubmission` analysis parameters, sent verbatim with every run of
 # every SIRIUS-touching executable. Seeded from SIRIUS 6.3.3's own

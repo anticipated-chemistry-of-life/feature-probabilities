@@ -27,6 +27,10 @@ structure) plus issue #21's remaining batch-control surface:
   chunk that needs it starts a fresh instance (`Sirius.shutdown`). SIRIUS
   6.5.4 retains ~0.9 GB of heap per chunk that only a process exit frees,
   so one long-lived instance grows by hundreds of GB over the full dataset.
+- ``--smoke-test`` deletes and recreates the config's ``[smoke_test]``
+  database, then processes only the first ``spectra_per_instrument_type``
+  spectra of every instrument type (TSV order), so the whole pipeline can
+  be exercised in minutes. It rejects ``--db`` and ``--instrument-type``.
 
 A feature's true structure is looked up by ``external_feature_id`` against
 a MassSpecGym-``identifier``-keyed map built once from the fetched TSV --
@@ -38,6 +42,7 @@ through unchanged onto ``AlignedFeature.external_feature_id``.
 from __future__ import annotations
 
 import tempfile
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +58,7 @@ from feature_probabilities.config import (
     DEFAULT_CONFIG_PATH,
     Config,
     ConfigError,
+    for_smoke_test,
     load_config,
 )
 from feature_probabilities.massspecgym import (
@@ -195,6 +201,20 @@ def _true_inchikey_by_identifier(spectra: Sequence[Spectrum]) -> dict[str, str]:
     }
 
 
+def _first_per_instrument_type(
+    spectra: Sequence[Spectrum], limit: int
+) -> list[Spectrum]:
+    """The first `limit` spectra of each instrument type, in input order."""
+    taken: Counter[str] = Counter()
+    first: list[Spectrum] = []
+    for spectrum in spectra:
+        spectrum_type = spectrum_instrument_type(spectrum)
+        if taken[spectrum_type] < limit:
+            taken[spectrum_type] += 1
+            first.append(spectrum)
+    return first
+
+
 def generate_groundtruth(
     session: Session,
     sirius: SiriusInterface,
@@ -203,11 +223,14 @@ def generate_groundtruth(
     work_dir: Path,
     force: bool = False,
     instrument_type: str = "all",
+    spectra_per_instrument_type: int | None = None,
 ) -> GroundtruthSummary:
     """Run the full pipeline against an already-open `session`.
 
     Fetches `config.massspecgym_revision`, chunks it by instrument type
-    (filtered to `instrument_type` unless it's `"all"`), and runs every
+    (filtered to `instrument_type` unless it's `"all"`, and capped to the
+    first `spectra_per_instrument_type` spectra of each instrument type, in
+    TSV order, when set), and runs every
     chunk through `run_cache.get_or_create_run` with
     `source_kind='ground_truth_massspecgym'`/`extract_id=None`/
     `force=force`, setting each resulting feature's `true_inchikey`.
@@ -247,6 +270,8 @@ def generate_groundtruth(
     ]
     spectra_skipped = len(spectra) - len(kept)
     spectra = kept
+    if spectra_per_instrument_type is not None:
+        spectra = _first_per_instrument_type(spectra, spectra_per_instrument_type)
 
     true_inchikey_by_identifier = _true_inchikey_by_identifier(spectra)
     chunk_paths_by_instrument_type = write_sirius_chunks(spectra, work_dir / "chunks")
@@ -336,6 +361,12 @@ def _format_summary(summary: GroundtruthSummary) -> str:
     return "\n".join(lines)
 
 
+def _delete_database(db_path: str) -> None:
+    """Delete the DuckDB file at `db_path` and its write-ahead log, if present."""
+    Path(db_path).unlink(missing_ok=True)
+    Path(f"{db_path}.wal").unlink(missing_ok=True)
+
+
 @click.command()
 @click.option(
     "--config",
@@ -371,17 +402,36 @@ def _format_summary(summary: GroundtruthSummary) -> str:
     "--instrument-type",
     "instrument_type",
     type=click.Choice(["Orbitrap", "QTOF", "all"]),
-    default="all",
+    default=None,
     help="Only process chunks for this instrument type (default: all).",
+)
+@click.option(
+    "--smoke-test",
+    "smoke_test",
+    is_flag=True,
+    default=False,
+    help=(
+        "Reset the config's [smoke_test] database and populate it from only "
+        "the first [smoke_test] spectra_per_instrument_type spectra of every "
+        "instrument type."
+    ),
 )
 def main(
     config_path: Path | None,
     db_path: str | None,
     massspecgym_revision: str | None,
     force: bool,
-    instrument_type: str,
+    instrument_type: str | None,
+    smoke_test: bool,
 ) -> None:
     """Fetch MassSpecGym, run it through cache-aware SIRIUS, populate ground truth."""
+    if smoke_test and db_path is not None:
+        raise click.UsageError("--smoke-test cannot be combined with --db.")
+    if smoke_test and instrument_type is not None:
+        raise click.UsageError(
+            "--smoke-test cannot be combined with --instrument-type: a smoke "
+            "test always covers every instrument type."
+        )
     try:
         config = load_config(
             config_path if config_path is not None else DEFAULT_CONFIG_PATH,
@@ -390,6 +440,11 @@ def main(
                 "massspecgym_revision": massspecgym_revision,
             },
         )
+        spectra_per_instrument_type = None
+        if smoke_test:
+            config, smoke_test_config = for_smoke_test(config)
+            spectra_per_instrument_type = smoke_test_config.spectra_per_instrument_type
+            _delete_database(config.db_path)
         engine = create_database(config.db_path)
         try:
             sirius = Sirius(headless=True)
@@ -404,7 +459,8 @@ def main(
                         config,
                         work_dir=Path(tmp),
                         force=force,
-                        instrument_type=instrument_type,
+                        instrument_type=instrument_type or "all",
+                        spectra_per_instrument_type=spectra_per_instrument_type,
                     )
             finally:
                 # Covers runs that end before or without a per-chunk

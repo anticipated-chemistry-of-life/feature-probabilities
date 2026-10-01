@@ -13,6 +13,10 @@ overriding individual keys. Precedence, highest to lowest:
    config file omits them; ``db_path``, ``required_sirius_version``, and
    ``massspecgym_revision`` have no such default and are required).
 
+The optional ``[smoke_test]`` section configures every CLI's ``--smoke-test``
+mode (:class:`SmokeTestConfig`, :func:`for_smoke_test`); when present, every
+one of its keys is required.
+
 A missing or malformed config file raises :class:`ConfigError` with an
 actionable message instead of letting a raw ``tomllib`` traceback surface.
 """
@@ -20,7 +24,7 @@ actionable message instead of letting a raw ``tomllib`` traceback surface.
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 type TOMLValue = (
@@ -31,6 +35,16 @@ type TOMLTable = dict[str, TOMLValue]
 DEFAULT_CONFIG_PATH = Path("config.toml")
 
 _REQUIRED_KEYS = ("db_path", "required_sirius_version", "massspecgym_revision")
+
+_SMOKE_TEST_STRING_KEYS = (
+    "db_path",
+    "kde_output_path",
+    "mzml_dir",
+    "metadata_csv",
+    "ionization_mode",
+    "instrument_type",
+    "export_path",
+)
 
 _DEFAULTS: TOMLTable = {
     "kde_output_path": "models/kde_model.pkl",
@@ -54,6 +68,26 @@ class SiriusConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SmokeTestConfig:
+    """The ``[smoke_test]`` section: a small, isolated end-to-end pipeline run.
+
+    ``db_path``/``kde_output_path`` replace the top-level ones (see
+    :func:`for_smoke_test`); ``spectra_per_instrument_type`` caps
+    ``generate-groundtruth``'s MassSpecGym input; the rest are ``annotate``'s
+    defaults for its otherwise-required inputs and its export.
+    """
+
+    db_path: str
+    kde_output_path: str
+    spectra_per_instrument_type: int
+    mzml_dir: str
+    metadata_csv: str
+    ionization_mode: str
+    instrument_type: str
+    export_path: str
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Fully merged configuration: hardcoded defaults < config file < CLI flags."""
 
@@ -62,6 +96,7 @@ class Config:
     massspecgym_revision: str
     kde_output_path: str
     sirius: SiriusConfig
+    smoke_test: SmokeTestConfig | None = None
 
 
 def _deep_merge(base: TOMLTable, overlay: TOMLTable) -> TOMLTable:
@@ -121,4 +156,71 @@ def load_config(
             analysis_params=dict(sirius_data.get("analysis_params") or {}),
             import_params=dict(sirius_data.get("import_params") or {}),
         ),
+        smoke_test=_smoke_test_config(merged.get("smoke_test"), path),
     )
+
+
+def _smoke_test_config(data: TOMLValue, path: Path) -> SmokeTestConfig | None:
+    """Parse the optional ``[smoke_test]`` section; every key is required."""
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ConfigError(f"Config file {path}: [smoke_test] section must be a table")
+
+    missing = [
+        key
+        for key in (*_SMOKE_TEST_STRING_KEYS, "spectra_per_instrument_type")
+        if data.get(key) in (None, "")
+    ]
+    if missing:
+        raise ConfigError(
+            f"Config file {path}: [smoke_test] is missing required key(s): "
+            f"{', '.join(missing)}"
+        )
+
+    spectra_per_instrument_type = data["spectra_per_instrument_type"]
+    if (
+        not isinstance(spectra_per_instrument_type, int)
+        or isinstance(spectra_per_instrument_type, bool)
+        or spectra_per_instrument_type < 1
+    ):
+        raise ConfigError(
+            f"Config file {path}: [smoke_test] spectra_per_instrument_type must "
+            f"be a positive integer, got {spectra_per_instrument_type!r}"
+        )
+
+    return SmokeTestConfig(
+        **{key: str(data[key]) for key in _SMOKE_TEST_STRING_KEYS},
+        spectra_per_instrument_type=spectra_per_instrument_type,
+    )
+
+
+def for_smoke_test(config: Config) -> tuple[Config, SmokeTestConfig]:
+    """`config` with its DB and KDE output paths swapped for ``[smoke_test]``'s.
+
+    Returns the swapped config together with its (now guaranteed present)
+    ``[smoke_test]`` section.
+
+    Raises:
+        ConfigError: the config has no ``[smoke_test]`` section, or its
+            ``db_path`` resolves to the same file as the top-level one --
+            ``generate-groundtruth --smoke-test`` deletes the smoke DB, so
+            sharing it would delete the real one.
+    """
+    smoke_test = config.smoke_test
+    if smoke_test is None:
+        raise ConfigError(
+            "--smoke-test needs a [smoke_test] section in the config file."
+        )
+    if Path(smoke_test.db_path).resolve() == Path(config.db_path).resolve():
+        raise ConfigError(
+            f"[smoke_test] db_path {smoke_test.db_path!r} is the same file as "
+            f"db_path {config.db_path!r}; --smoke-test resets its database, so "
+            "it must point elsewhere."
+        )
+    smoke_config = replace(
+        config,
+        db_path=smoke_test.db_path,
+        kde_output_path=smoke_test.kde_output_path,
+    )
+    return smoke_config, smoke_test

@@ -388,3 +388,84 @@ def test_missing_one_stratums_data_exits_nonzero_with_a_clear_message(
 
     assert result.exit_code != 0
     assert missing_stratum in result.output
+
+
+SMOKE_TEST_TOML = """
+[smoke_test]
+db_path = "{smoke_db_path}"
+kde_output_path = "{smoke_kde_output_path}"
+spectra_per_instrument_type = 2
+mzml_dir = "unused-smoke-mzml-dir"
+metadata_csv = "unused-smoke-metadata.csv"
+ionization_mode = "positive"
+instrument_type = "Orbitrap"
+export_path = "unused-smoke-export.csv"
+"""
+
+
+def test_smoke_test_fits_from_the_smoke_db_and_writes_under_the_smoke_kde_path(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "database.duckdb"
+    output_dir = tmp_path / "models"
+    smoke_db_path = tmp_path / "smoke" / "database.duckdb"
+    smoke_output_dir = tmp_path / "smoke-models"
+    config_path = _write_config(tmp_path, db_path, output_dir / "kde_model.pkl")
+    with config_path.open("a") as handle:
+        handle.write(
+            SMOKE_TEST_TOML.format(
+                smoke_db_path=smoke_db_path,
+                smoke_kde_output_path=smoke_output_dir / "kde_model.pkl",
+            )
+        )
+    smoke_db_path.parent.mkdir()
+    engine = create_database(smoke_db_path)
+    with Session(engine) as session:
+        _seed_two_strata(session)
+    engine.dispose()
+
+    result = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
+
+    assert result.exit_code == 0, result.output
+    assert not db_path.exists()
+    assert not output_dir.exists()
+    [pickle_path] = smoke_output_dir.glob("kde_model_*.pkl")
+    engine = create_database(smoke_db_path)
+    with Session(engine) as session:
+        [kde_model] = session.scalars(select(KdeModel)).all()
+        assert Path(kde_model.artifact_path) == pickle_path
+    engine.dispose()
+
+
+def test_smoke_test_rejects_the_db_flag(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path, tmp_path / "database.duckdb", tmp_path / "model.pkl"
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--config", str(config_path), "--smoke-test", "--db", "other.duckdb"],
+    )
+
+    assert result.exit_code == 2
+    assert "--db" in result.output
+
+
+def test_smoke_test_with_an_empty_smoke_db_points_at_the_smoke_groundtruth(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(
+        tmp_path, tmp_path / "database.duckdb", tmp_path / "model.pkl"
+    )
+    with config_path.open("a") as handle:
+        handle.write(
+            SMOKE_TEST_TOML.format(
+                smoke_db_path=tmp_path / "smoke.duckdb",
+                smoke_kde_output_path=tmp_path / "smoke-model.pkl",
+            )
+        )
+
+    result = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
+
+    assert result.exit_code != 0
+    assert "generate-groundtruth --smoke-test" in result.output

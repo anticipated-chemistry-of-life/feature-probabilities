@@ -30,6 +30,7 @@ from feature_probabilities.config import (
     DEFAULT_CONFIG_PATH,
     Config,
     ConfigError,
+    for_smoke_test,
     load_config,
 )
 from feature_probabilities.groundtruth import (
@@ -121,12 +122,18 @@ def _pickle_kdes(kdes: dict[str, gaussian_kde], output_path: Path) -> None:
         pickle.dump(kdes, handle)
 
 
-def fit_kde(session: Session, *, output_path: Path) -> FitKdeSummary:
+def fit_kde(
+    session: Session,
+    *,
+    output_path: Path,
+    groundtruth_command: str = "generate-groundtruth",
+) -> FitKdeSummary:
     """Fit every stratum's KDE from `session`'s ground truth and persist it.
 
     Pickles the fitted `{"Orbitrap": kde, "QTOF": kde, "__global__": kde}`
     dict to `output_path` and inserts+commits one `kde_models` row pointing
-    at it.
+    at it. `groundtruth_command` is the command a no-data error tells the
+    operator to run.
 
     Raises:
         NoGroundTruthDataError: there are zero correct-assignment rows to
@@ -140,7 +147,7 @@ def fit_kde(session: Session, *, output_path: Path) -> FitKdeSummary:
     if not correct_rows:
         raise NoGroundTruthDataError(
             "No correct-assignment ground-truth rows found in the database. "
-            "Run generate-groundtruth first to populate ground-truth data."
+            f"Run {groundtruth_command} first to populate ground-truth data."
         )
 
     kdes = fit_stratified_kdes(correct_rows)
@@ -207,24 +214,45 @@ def _default_output_path(config: Config) -> Path:
     default=None,
     help="Override the config's kde_output_path for the pickled artifact.",
 )
+@click.option(
+    "--smoke-test",
+    "smoke_test",
+    is_flag=True,
+    default=False,
+    help=(
+        "Fit from the config's [smoke_test] database and write the pickle "
+        "under its [smoke_test] kde_output_path."
+    ),
+)
 def main(
     config_path: Path | None,
     db_path: str | None,
     output_path: Path | None,
+    smoke_test: bool,
 ) -> None:
     """Fit stratified KDE calibration models from the ground-truth table."""
+    if smoke_test and db_path is not None:
+        raise click.UsageError("--smoke-test cannot be combined with --db.")
     try:
         config = load_config(
             config_path if config_path is not None else DEFAULT_CONFIG_PATH,
             overrides={"db_path": db_path},
         )
+        groundtruth_command = "generate-groundtruth"
+        if smoke_test:
+            config, _ = for_smoke_test(config)
+            groundtruth_command = "generate-groundtruth --smoke-test"
         resolved_output_path = (
             output_path if output_path is not None else _default_output_path(config)
         )
         engine = create_database(config.db_path)
         try:
             with Session(engine) as session:
-                summary = fit_kde(session, output_path=resolved_output_path)
+                summary = fit_kde(
+                    session,
+                    output_path=resolved_output_path,
+                    groundtruth_command=groundtruth_command,
+                )
         finally:
             engine.dispose()
     except _CLICK_EXCEPTION_ERRORS as exc:

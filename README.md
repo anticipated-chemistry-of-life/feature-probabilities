@@ -31,3 +31,20 @@ Set them either by:
    ```
 
 Variables already exported in your shell take precedence over `.env` values.
+
+## Smoke test
+
+`--smoke-test` runs the whole pipeline on a small, isolated input so a change
+can be checked end to end in minutes. Every setting lives in `config.toml`'s
+`[smoke_test]` section:
+
+```
+generate-groundtruth --smoke-test   # resets the smoke DB; first N spectra per instrument type
+fit-kde --smoke-test                # fits from the smoke DB
+annotate --smoke-test               # annotates data/smoke_test/ into the smoke DB and exports
+```
+
+The smoke DB, KDE pickles and export live under `db/smoke_test/` and
+`models/smoke_test/`, never touching the real database. `--db` cannot be
+combined with `--smoke-test`; `annotate`'s other flags override their
+`[smoke_test]` defaults.

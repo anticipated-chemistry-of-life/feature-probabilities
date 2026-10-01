@@ -41,6 +41,11 @@ surface:
   next file that needs it starts a fresh instance (`Sirius.shutdown`).
   SIRIUS 6.5.4 retains heap per analysed feature that only a process exit
   frees, so one long-lived instance grows without bound over a batch.
+- ``--smoke-test`` annotates into the config's ``[smoke_test]`` database,
+  taking ``--mzml-dir``, ``--metadata-csv``, ``--ionization-mode``,
+  ``--instrument-type`` and ``--export`` from ``[smoke_test]`` unless
+  passed explicitly (the four inputs are otherwise required). It rejects
+  ``--db``.
 
 ``ionization_mode``/``instrument_type`` are per-batch CLI flags rather than
 metadata-CSV columns: per ``CONTEXT.md``'s Extract entry, they're
@@ -68,6 +73,7 @@ from feature_probabilities.config import (
     DEFAULT_CONFIG_PATH,
     Config,
     ConfigError,
+    for_smoke_test,
     load_config,
 )
 from feature_probabilities.metadata import (
@@ -208,7 +214,9 @@ def _mzml_files(mzml_dir: Path) -> list[Path]:
     )
 
 
-def _resolve_kde_model(session: Session, kde_model_path: Path | None) -> KdeModel:
+def _resolve_kde_model(
+    session: Session, kde_model_path: Path | None, *, fit_kde_command: str
+) -> KdeModel:
     """The `kde_models` row `--kde-model` selects, or the most recently fitted one.
 
     "Most recently fitted" is the highest `kde_model_id` -- the same
@@ -236,8 +244,8 @@ def _resolve_kde_model(session: Session, kde_model_path: Path | None) -> KdeMode
     ).first()
     if kde_model is None:
         raise NoKdeModelError(
-            "No kde_models row found. Run fit-kde first, or pass --kde-model "
-            "explicitly."
+            f"No kde_models row found. Run {fit_kde_command} first, or pass "
+            "--kde-model explicitly."
         )
     return kde_model
 
@@ -320,6 +328,7 @@ def annotate_batch(
     kde_model_path: Path | None = None,
     force: bool = False,
     export_path: Path | None = None,
+    fit_kde_command: str = "fit-kde",
 ) -> AnnotateSummary:
     """Upsert `metadata_csv` and run every `mzml_dir` file through cache-aware SIRIUS.
 
@@ -344,6 +353,8 @@ def annotate_batch(
     propagate out of this function.
     If `export_path` is given, writes the feature-probability table for
     every successfully processed file once the batch finishes.
+    `fit_kde_command` is the command a missing-KDE error tells the operator
+    to run.
 
     Raises:
         SiriusVersionMismatchError: the installed SIRIUS version doesn't
@@ -357,7 +368,9 @@ def annotate_batch(
         SiriusShutdownError: SIRIUS didn't exit after a file.
     """
     require_matching_sirius_version(sirius, config.required_sirius_version)
-    kde_model = _resolve_kde_model(session, kde_model_path)
+    kde_model = _resolve_kde_model(
+        session, kde_model_path, fit_kde_command=fit_kde_command
+    )
     kdes = load_kdes(kde_model.artifact_path)
     export_writer_name = (
         _export_writer_name(export_path) if export_path is not None else None
@@ -459,6 +472,37 @@ def _format_summary(summary: AnnotateSummary) -> str:
     return "\n".join(lines)
 
 
+def _required_inputs(
+    mzml_dir: Path | None,
+    metadata_csv: Path | None,
+    ionization_mode: str | None,
+    instrument_type: str | None,
+) -> tuple[Path, Path, str, str]:
+    """The batch's four input options, or a usage error naming every missing one.
+
+    Raises:
+        click.UsageError: any of the four is `None`.
+    """
+    if (
+        mzml_dir is None
+        or metadata_csv is None
+        or ionization_mode is None
+        or instrument_type is None
+    ):
+        missing = [
+            option
+            for option, value in (
+                ("--mzml-dir", mzml_dir),
+                ("--metadata-csv", metadata_csv),
+                ("--ionization-mode", ionization_mode),
+                ("--instrument-type", instrument_type),
+            )
+            if value is None
+        ]
+        raise click.UsageError(f"Missing option(s): {', '.join(missing)}.")
+    return mzml_dir, metadata_csv, ionization_mode, instrument_type
+
+
 @click.command()
 @click.option(
     "--config",
@@ -478,31 +522,37 @@ def _format_summary(summary: AnnotateSummary) -> str:
     "--mzml-dir",
     "mzml_dir",
     type=click.Path(path_type=Path),
-    required=True,
-    help="Directory of new mzML files to process.",
+    required=False,
+    help="Directory of new mzML files to process (--smoke-test default: config).",
 )
 @click.option(
     "--metadata-csv",
     "metadata_csv",
     type=click.Path(path_type=Path),
-    required=True,
-    help="CSV of species/extract metadata to upsert, keyed by sample_code.",
+    required=False,
+    help=(
+        "CSV of species/extract metadata to upsert, keyed by sample_code "
+        "(--smoke-test default: config)."
+    ),
 )
 @click.option(
     "--ionization-mode",
     "ionization_mode",
     type=click.Choice(["positive", "negative"]),
-    required=True,
-    help="Ionization polarity SIRIUS should record for every run in this batch.",
+    required=False,
+    help=(
+        "Ionization polarity SIRIUS should record for every run in this batch "
+        "(--smoke-test default: config)."
+    ),
 )
 @click.option(
     "--instrument-type",
     "instrument_type",
     type=str,
-    required=True,
+    required=False,
     help=(
         "Instrument type SIRIUS should record for every run in this batch "
-        "(e.g. Orbitrap, QTOF)."
+        "(e.g. Orbitrap, QTOF; --smoke-test default: config)."
     ),
 )
 @click.option(
@@ -531,25 +581,54 @@ def _format_summary(summary: AnnotateSummary) -> str:
     default=None,
     help=(
         "Write the batch's feature-probability table (.csv or .parquet) "
-        "for every successfully processed file."
+        "for every successfully processed file (--smoke-test default: config)."
+    ),
+)
+@click.option(
+    "--smoke-test",
+    "smoke_test",
+    is_flag=True,
+    default=False,
+    help=(
+        "Annotate into the config's [smoke_test] database, defaulting every "
+        "input and the export to its [smoke_test] values."
     ),
 )
 def main(
     config_path: Path | None,
     db_path: str | None,
-    mzml_dir: Path,
-    metadata_csv: Path,
-    ionization_mode: str,
-    instrument_type: str,
+    mzml_dir: Path | None,
+    metadata_csv: Path | None,
+    ionization_mode: str | None,
+    instrument_type: str | None,
     kde_model_path: Path | None,
     force: bool,
     export_path: Path | None,
+    smoke_test: bool,
 ) -> None:
     """Upsert batch metadata, run new mzML files through cache-aware SIRIUS, and calibrate."""
+    if smoke_test and db_path is not None:
+        raise click.UsageError("--smoke-test cannot be combined with --db.")
+    if not smoke_test:
+        # Fail on a missing input before touching the config; --smoke-test
+        # can only fill its defaults in once the config is loaded.
+        _required_inputs(mzml_dir, metadata_csv, ionization_mode, instrument_type)
     try:
         config = load_config(
             config_path if config_path is not None else DEFAULT_CONFIG_PATH,
             overrides={"db_path": db_path},
+        )
+        fit_kde_command = "fit-kde"
+        if smoke_test:
+            config, smoke_test_config = for_smoke_test(config)
+            mzml_dir = mzml_dir or Path(smoke_test_config.mzml_dir)
+            metadata_csv = metadata_csv or Path(smoke_test_config.metadata_csv)
+            ionization_mode = ionization_mode or smoke_test_config.ionization_mode
+            instrument_type = instrument_type or smoke_test_config.instrument_type
+            export_path = export_path or Path(smoke_test_config.export_path)
+            fit_kde_command = "fit-kde --smoke-test"
+        mzml_dir, metadata_csv, ionization_mode, instrument_type = _required_inputs(
+            mzml_dir, metadata_csv, ionization_mode, instrument_type
         )
         engine = create_database(config.db_path)
         try:
@@ -571,6 +650,7 @@ def main(
                         kde_model_path=kde_model_path,
                         force=force,
                         export_path=export_path,
+                        fit_kde_command=fit_kde_command,
                     )
             finally:
                 # Covers runs that end before or without a per-file
