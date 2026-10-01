@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -159,13 +160,17 @@ class SiriusInterface(Protocol):
         """Submit `job_submission` for analysis against the current project and wait for it."""
         ...
 
-    def get_structure_candidates(self) -> list[FeatureStructureCandidate]:
-        """Every (feature, structure candidate) pair for the current project.
+    def get_structure_candidates(
+        self, features: Sequence[AlignedFeature]
+    ) -> list[FeatureStructureCandidate]:
+        """Every (feature, structure candidate) pair for `features` in the current project.
 
-        Joins each feature from `get_features` with its own
-        `get_structure_candidates` result, since `StructureCandidateFormula`
-        does not carry ion mass on its own -- a feature with zero structure
-        candidates contributes no rows here (see `get_features` for those).
+        Joins each of `features` (as returned by `get_features`) with its own
+        structure candidates, since `StructureCandidateFormula` does not carry
+        ion mass on its own -- a feature with zero structure candidates
+        contributes no rows here (see `get_features` for those). Callers pass
+        only the features the analysis job ran on: any other feature has no
+        results to read.
         """
         ...
 
@@ -305,11 +310,13 @@ class Sirius:
         project_id = self._require_project_id()
         return self._api.features().get_aligned_features(project_id)
 
-    def get_structure_candidates(self) -> list[FeatureStructureCandidate]:
+    def get_structure_candidates(
+        self, features: Sequence[AlignedFeature]
+    ) -> list[FeatureStructureCandidate]:
         project_id = self._require_project_id()
         features_api = self._api.features()
         rows: list[FeatureStructureCandidate] = []
-        for feature in self.get_features():
+        for feature in features:
             candidates = features_api.get_structure_candidates(
                 project_id, feature.aligned_feature_id
             )

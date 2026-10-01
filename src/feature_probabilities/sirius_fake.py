@@ -19,7 +19,9 @@ specific entry falls back to `default_features`/`default_results`, so a
 test that doesn't care about the exact data still gets a plausible,
 non-empty result. The two are configured independently, matching real
 SIRIUS: a feature can exist (`get_features`) with zero structure candidates
-(absent from `get_structure_candidates`).
+(absent from `get_structure_candidates`). `get_structure_candidates` returns
+only the canned rows whose feature is among the features it is asked about,
+as the real wrapper only ever reads candidates for those.
 
 Every call that would talk to a real SIRIUS process is recorded
 (`create_project_calls`, `import_spectra_calls`, `run_calls`), so a test can
@@ -37,6 +39,7 @@ raised, mirroring a real SIRIUS job that was submitted but failed.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -178,13 +181,15 @@ class FakeSirius:
                 return list(canned)
         return list(self.default_features)
 
-    def get_structure_candidates(self) -> list[FeatureStructureCandidate]:
+    def get_structure_candidates(
+        self, features: Sequence[AlignedFeature]
+    ) -> list[FeatureStructureCandidate]:
         self._require_project()
+        rows = self.default_results
         if self._current_spectra_file is not None:
-            canned = self.canned_results.get(self._current_spectra_file)
-            if canned is not None:
-                return list(canned)
-        return list(self.default_results)
+            rows = self.canned_results.get(self._current_spectra_file, rows)
+        requested = {feature.aligned_feature_id for feature in features}
+        return [row for row in rows if row.feature.aligned_feature_id in requested]
 
     def _require_project(self) -> None:
         if not self._has_project:

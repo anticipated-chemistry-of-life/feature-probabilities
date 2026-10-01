@@ -56,12 +56,7 @@ if TYPE_CHECKING:
 
 
 class RunCacheError(Exception):
-    """Raised when a cache-miss run's SIRIUS results can't be persisted.
-
-    Covers invariants the real SIRIUS API always upholds (every structure
-    candidate belongs to a feature the same project also reports) but a
-    misconfigured `FakeSirius` in a test can violate.
-    """
+    """Raised when a SIRIUS run request can't be built for its input."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +194,7 @@ def _run_and_persist(
         sirius.run(request.analysis_params)
 
         aligned_features = sirius.get_features()
-        candidate_rows = sirius.get_structure_candidates()
+        candidate_rows = sirius.get_structure_candidates(aligned_features)
     finally:
         # A project left open stays registered in the SIRIUS instance for its
         # whole lifetime, holding its database open even once the temporary
@@ -242,13 +237,7 @@ def _run_and_persist(
     molecule_cache: dict[str, Molecule] = {}
     annotations: list[Annotation] = []
     for row in candidate_rows:
-        feature = feature_by_aligned_id.get(row.feature.aligned_feature_id)
-        if feature is None:
-            raise RunCacheError(
-                "get_structure_candidates returned a structure candidate for "
-                f"feature {row.feature.aligned_feature_id!r}, which "
-                "get_features did not report."
-            )
+        feature = feature_by_aligned_id[row.feature.aligned_feature_id]
         candidate = row.candidate
         molecule = _get_or_create_molecule(
             session,
@@ -296,10 +285,6 @@ def get_or_create_run(
     at all. Otherwise runs SIRIUS via `sirius` and persists a new,
     coexisting `sirius_runs` row plus its `features`, `annotations`, and
     (deduplicated globally by `inchikey`) `molecules` rows.
-
-    Raises:
-        RunCacheError: a structure candidate's feature wasn't also reported
-            by `get_features`.
     """
     input_checksum = input_file_checksum(request.input_file.read_bytes())
     import_checksum = import_params_checksum(request.import_params)

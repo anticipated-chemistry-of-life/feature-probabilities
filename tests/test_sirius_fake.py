@@ -79,7 +79,7 @@ def test_structure_candidates_carry_both_csi_score_and_ion_mass_on_one_row() -> 
     fake.import_spectra(Path("chunk.mgf"))
     fake.run(JobSubmission())
 
-    rows = fake.get_structure_candidates()
+    rows = fake.get_structure_candidates(fake.get_features())
 
     assert len(rows) >= 1
     row = rows[0]
@@ -95,6 +95,7 @@ def test_structure_candidates_use_the_canned_result_configured_for_the_imported_
     feature_a = _feature("feature-a", ion_mass=100.0)
     feature_b = _feature("feature-b", ion_mass=200.0)
     fake = FakeSirius(
+        canned_features={Path("a.mgf"): [feature_a], Path("b.mgf"): [feature_b]},
         canned_results={
             Path("a.mgf"): [
                 FeatureStructureCandidate(
@@ -106,17 +107,17 @@ def test_structure_candidates_use_the_canned_result_configured_for_the_imported_
                     feature=feature_b, candidate=_candidate("BBBBBBBBBBBBBB")
                 )
             ],
-        }
+        },
     )
     fake.create_project(Path("project"))
 
     fake.import_spectra(Path("a.mgf"))
     fake.run(JobSubmission())
-    rows_a = fake.get_structure_candidates()
+    rows_a = fake.get_structure_candidates(fake.get_features())
 
     fake.import_spectra(Path("b.mgf"))
     fake.run(JobSubmission())
-    rows_b = fake.get_structure_candidates()
+    rows_b = fake.get_structure_candidates(fake.get_features())
 
     assert [row.candidate.inchi_key for row in rows_a] == ["AAAAAAAAAAAAAA"]
     assert [row.candidate.inchi_key for row in rows_b] == ["BBBBBBBBBBBBBB"]
@@ -142,7 +143,7 @@ def test_get_features_reaches_a_feature_with_zero_structure_candidates() -> None
     fake.import_spectra(Path("a.mgf"))
 
     features = fake.get_features()
-    rows = fake.get_structure_candidates()
+    rows = fake.get_structure_candidates(features)
 
     assert [feature.aligned_feature_id for feature in features] == ["candidate-free"]
     assert rows == []
@@ -166,7 +167,7 @@ def test_get_version_defaults_without_requiring_a_project() -> None:
         lambda fake: fake.import_spectra(Path("chunk.mgf")),
         lambda fake: fake.run(JobSubmission()),
         lambda fake: fake.get_features(),
-        lambda fake: fake.get_structure_candidates(),
+        lambda fake: fake.get_structure_candidates([]),
     ],
 )
 def test_project_scoped_calls_before_create_project_raise(call) -> None:
