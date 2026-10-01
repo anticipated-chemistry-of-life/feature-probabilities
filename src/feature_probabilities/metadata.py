@@ -9,7 +9,11 @@ This module is standalone from SIRIUS entirely: it only touches the
 The table is comma-separated, or tab-separated when its filename ends in
 `.tsv` (case-insensitive). Its columns map onto the two tables as follows:
 
-- `sample_id` (required) -- the upsert key, `extracts.sample_id`.
+- `sample_id` (required) -- the upsert key, `extracts.sample_id`. An
+  arbitrary identifier, unrelated to any mzML filename.
+- `filename` (required by `annotate`) -- the mzML file this row describes,
+  matched against each input mzML by stem (see `find_metadata_row_for_mzml`).
+  Not stored: it identifies a file, not an extract.
 - `taxon_scientific_name` (required) -- `species.taxon_scientific_name`, the species upsert key.
 - `ncbi_taxid`, `family` (optional) -- the rest of `species`.
 - `organ` (optional) -- `extracts.organ`.
@@ -37,9 +41,11 @@ from feature_probabilities.schema import Extract, Species
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
-#: The upsert key column, both for `extracts.sample_id` and for matching
-#: an mzML filename against a CSV row.
+#: The upsert key column, `extracts.sample_id`.
 SAMPLE_ID_COLUMN = "sample_id"
+
+#: The column naming the mzML file a row describes; `annotate`'s lookup key.
+FILENAME_COLUMN = "filename"
 
 #: Columns that map directly onto `species` columns (besides the species
 #: upsert key, `taxon_scientific_name`, which is also required -- see `REQUIRED_COLUMNS`).
@@ -51,7 +57,12 @@ EXTRACT_COLUMNS = ("organ",)
 
 #: Every column with a fixed destination. Anything else in the CSV lands in
 #: `extracts.extra_metadata` instead of requiring a fixed schema.
-PINNED_COLUMNS = (SAMPLE_ID_COLUMN, *SPECIES_COLUMNS, *EXTRACT_COLUMNS)
+PINNED_COLUMNS = (
+    SAMPLE_ID_COLUMN,
+    FILENAME_COLUMN,
+    *SPECIES_COLUMNS,
+    *EXTRACT_COLUMNS,
+)
 
 #: Columns a row must carry a non-blank value for; anything else is optional.
 REQUIRED_COLUMNS = (SAMPLE_ID_COLUMN, "taxon_scientific_name")
@@ -126,28 +137,38 @@ def load_metadata_csv(csv_path: Path | str) -> pd.DataFrame:
 def find_metadata_row_for_mzml(
     df: pd.DataFrame, mzml_filename: str | Path
 ) -> pd.Series:
-    """Find the metadata row for `mzml_filename`, matched by `sample_id`.
+    """Find the metadata row describing `mzml_filename`, matched by `filename`.
 
-    Matches `Path(mzml_filename).stem` -- the filename without directory or
-    extension -- against `sample_id` exactly, so both a bare sample code
-    (e.g. `"EX-001"`) and a real mzML filename (e.g. `"EX-001.mzML"`) resolve
-    the same row.
+    Compares stems -- names without directory or extension -- so a row's
+    `filename` of `"run_001.mzML"`, `"run_001.raw"` or `"data/run_001.mzML"`
+    all match the input file `"some/dir/run_001.mzML"`. `sample_id` plays no
+    part in matching.
 
     Raises:
-        MetadataError: no row's `sample_id` matches, or more than one does
-            (an ambiguous CSV, which would otherwise silently pick one).
+        MetadataError: the table has no `filename` column, no row's
+            `filename` matches, or more than one does (an ambiguous table,
+            which would otherwise silently pick one).
     """
+    if FILENAME_COLUMN not in df.columns:
+        raise MetadataError(
+            f"Metadata table has no '{FILENAME_COLUMN}' column, needed to match "
+            f"mzML file {str(mzml_filename)!r} to its row"
+        )
     stem = Path(mzml_filename).stem
-    matches = df.index[df[SAMPLE_ID_COLUMN].map(_clean) == stem]
+    row_stems = df[FILENAME_COLUMN].map(
+        lambda value: None if (name := _clean(value)) is None else Path(name).stem
+    )
+    matches = df.index[row_stems == stem]
     if len(matches) == 0:
         raise MetadataError(
-            f"No metadata row found for mzML file {mzml_filename!r} "
-            f"(expected a row with sample_id={stem!r})"
+            f"No metadata row found for mzML file {str(mzml_filename)!r} "
+            f"(expected a row whose {FILENAME_COLUMN} has stem {stem!r})"
         )
     if len(matches) > 1:
         raise MetadataError(
-            f"Metadata CSV has {len(matches)} rows with sample_id={stem!r}; "
-            f"expected exactly one for mzML file {mzml_filename!r}"
+            f"Metadata table has {len(matches)} rows whose {FILENAME_COLUMN} has "
+            f"stem {stem!r}; expected exactly one for mzML file "
+            f"{str(mzml_filename)!r}"
         )
     return df.loc[matches[0]]
 

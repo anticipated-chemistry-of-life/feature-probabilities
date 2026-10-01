@@ -51,13 +51,13 @@ required_sirius_version = "6.0.0"
 massspecgym_revision = "abc123"
 """
 
-BASE_CSV = """sample_id,taxon_scientific_name,ncbi_taxid,family,organ
-EX-001,Panthera leo,9689,Felidae,leaf
+BASE_CSV = """sample_id,filename,taxon_scientific_name,ncbi_taxid,family,organ
+EX-001,EX-001.mzML,Panthera leo,9689,Felidae,leaf
 """
 
-TWO_EXTRACT_CSV = """sample_id,taxon_scientific_name,ncbi_taxid,family,organ
-EX-001,Panthera leo,9689,Felidae,leaf
-EX-002,Panthera tigris,9694,Felidae,root
+TWO_EXTRACT_CSV = """sample_id,filename,taxon_scientific_name,ncbi_taxid,family,organ
+EX-001,EX-001.mzML,Panthera leo,9689,Felidae,leaf
+EX-002,EX-002.mzML,Panthera tigris,9694,Felidae,root
 """
 
 #: (ion_mass, csi_score) points bracketing `_fake_sirius_for`'s default

@@ -22,9 +22,9 @@ from feature_probabilities.metadata import (
 )
 from feature_probabilities.schema import Extract, Species, create_database
 
-BASE_CSV = """sample_id,taxon_scientific_name,ncbi_taxid,family,organ,collector
-EX-001,Panthera leo,9689,Felidae,leaf,field team A
-EX-002,Bos taurus,9913,Bovidae,root,field team B
+BASE_CSV = """sample_id,taxon_scientific_name,ncbi_taxid,family,organ,collector,filename
+EX-001,Panthera leo,9689,Felidae,leaf,field team A,20240307_run_01.mzML
+EX-002,Bos taurus,9913,Bovidae,root,field team B,20240307_run_02.mzML
 """
 
 
@@ -162,23 +162,42 @@ def test_missing_csv_file_raises_a_clear_error(tmp_path: Path) -> None:
         load_metadata_csv(tmp_path / "does-not-exist.csv")
 
 
-def test_find_metadata_row_for_mzml_matches_by_filename_stem(tmp_path: Path) -> None:
+def test_find_metadata_row_for_mzml_matches_filename_not_sample_id(
+    tmp_path: Path,
+) -> None:
     csv_path = write_csv(tmp_path)
     df = load_metadata_csv(csv_path)
 
-    row = find_metadata_row_for_mzml(df, "EX-001.mzML")
-
-    assert row["sample_id"] == "EX-001"
-    assert row["taxon_scientific_name"] == "Panthera leo"
-
-
-def test_find_metadata_row_for_mzml_matches_a_bare_sample_id(tmp_path: Path) -> None:
-    csv_path = write_csv(tmp_path)
-    df = load_metadata_csv(csv_path)
-
-    row = find_metadata_row_for_mzml(df, "EX-002")
+    row = find_metadata_row_for_mzml(df, tmp_path / "20240307_run_02.mzML")
 
     assert row["sample_id"] == "EX-002"
+    with pytest.raises(MetadataError, match="EX-002"):
+        find_metadata_row_for_mzml(df, "EX-002.mzML")
+
+
+def test_find_metadata_row_for_mzml_ignores_the_filename_extension_and_directory(
+    tmp_path: Path,
+) -> None:
+    csv_path = write_csv(
+        tmp_path,
+        "sample_id,taxon_scientific_name,filename\n"
+        "EX-001,Panthera leo,raw/20240307_run_01.raw\n",
+    )
+    df = load_metadata_csv(csv_path)
+
+    row = find_metadata_row_for_mzml(df, "20240307_run_01.mzML")
+
+    assert row["sample_id"] == "EX-001"
+
+
+def test_find_metadata_row_for_mzml_without_a_filename_column_raises_a_clear_error(
+    tmp_path: Path,
+) -> None:
+    csv_path = write_csv(tmp_path, "sample_id,taxon_scientific_name\nEX-001,Panthera leo\n")
+    df = load_metadata_csv(csv_path)
+
+    with pytest.raises(MetadataError, match="'filename' column"):
+        find_metadata_row_for_mzml(df, "EX-001.mzML")
 
 
 def test_find_metadata_row_for_mzml_with_no_match_raises_a_clear_error(
@@ -191,17 +210,18 @@ def test_find_metadata_row_for_mzml_with_no_match_raises_a_clear_error(
         find_metadata_row_for_mzml(df, "EX-999.mzML")
 
 
-def test_find_metadata_row_for_mzml_with_duplicate_sample_ids_raises_a_clear_error(
+def test_find_metadata_row_for_mzml_with_duplicate_filenames_raises_a_clear_error(
     tmp_path: Path,
 ) -> None:
     csv_path = write_csv(
         tmp_path,
-        "sample_id,taxon_scientific_name\nEX-001,Panthera leo\nEX-001,Bos taurus\n",
+        "sample_id,taxon_scientific_name,filename\n"
+        "EX-001,Panthera leo,run.mzML\nEX-002,Bos taurus,run.mzML\n",
     )
     df = load_metadata_csv(csv_path)
 
     with pytest.raises(MetadataError, match="2 rows"):
-        find_metadata_row_for_mzml(df, "EX-001.mzML")
+        find_metadata_row_for_mzml(df, "run.mzML")
 
 
 def test_upsert_metadata_row_uses_find_result_to_upsert_a_single_row(
@@ -209,7 +229,7 @@ def test_upsert_metadata_row_uses_find_result_to_upsert_a_single_row(
 ) -> None:
     csv_path = write_csv(tmp_path)
     df = load_metadata_csv(csv_path)
-    row = find_metadata_row_for_mzml(df, "EX-001.mzML")
+    row = find_metadata_row_for_mzml(df, "20240307_run_01.mzML")
 
     engine = create_database(":memory:")
     with Session(engine) as session:
