@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from click.testing import CliRunner
-from PySirius import AlignedFeature, StructureCandidateFormula
+from PySirius import AlignedFeature, DataQuality, StructureCandidateFormula
 from scipy.stats import gaussian_kde
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -90,15 +90,21 @@ def _write_mzml_dir(tmp_path: Path, names: list[str]) -> Path:
     return mzml_dir
 
 
-def _fake_sirius_for(inchikey: str = "AAAAAAAAAAAAAA") -> FakeSirius:
-    feature = AlignedFeature(
-        aligned_feature_id="fake-feature-1",
-        external_feature_id="fake-feature-1",
+def _aligned_feature(
+    feature_id: str, quality: DataQuality = DataQuality.GOOD
+) -> AlignedFeature:
+    return AlignedFeature(
+        aligned_feature_id=feature_id,
+        external_feature_id=feature_id,
         ion_mass=151.0,
         charge=1,
         detected_adducts=["[M+H]+"],
+        quality=quality,
     )
-    candidate = StructureCandidateFormula(
+
+
+def _candidate(inchikey: str) -> StructureCandidateFormula:
+    return StructureCandidateFormula(
         inchi_key=inchikey,
         smiles="CCO",
         rank=1,
@@ -110,6 +116,11 @@ def _fake_sirius_for(inchikey: str = "AAAAAAAAAAAAAA") -> FakeSirius:
         formula_id="fake-formula-1",
         xlog_p=0.5,
     )
+
+
+def _fake_sirius_for(inchikey: str = "AAAAAAAAAAAAAA") -> FakeSirius:
+    feature = _aligned_feature("fake-feature-1")
+    candidate = _candidate(inchikey)
     return FakeSirius(
         default_features=[feature],
         default_results=[
@@ -260,6 +271,54 @@ def test_second_run_with_unchanged_inputs_makes_zero_wrapper_calls(
         # kde_model_id updates the existing row in place rather than
         # raising a primary-key conflict.
         assert len(session.scalars(select(CalibrationScore)).all()) == 1
+
+
+def test_only_good_and_decent_features_are_analysed_and_persisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
+    csv_path = _write_csv(tmp_path)
+    features = [
+        _aligned_feature(quality.value, quality)
+        for quality in (
+            DataQuality.GOOD,
+            DataQuality.DECENT,
+            DataQuality.BAD,
+            DataQuality.LOWEST,
+        )
+    ]
+    fake = FakeSirius(
+        default_features=features,
+        default_results=[
+            FeatureStructureCandidate(feature=feature, candidate=_candidate(key))
+            for feature, key in zip(
+                features,
+                [
+                    "AAAAAAAAAAAAAA",
+                    "BBBBBBBBBBBBBB",
+                    "CCCCCCCCCCCCCC",
+                    "DDDDDDDDDDDDDD",
+                ],
+                strict=True,
+            )
+        ],
+    )
+    _patch_seams(monkeypatch, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_kde_model(db_path, tmp_path / "kde.pkl")
+
+    result = _invoke(config_path, mzml_dir, csv_path)
+
+    assert result.exit_code == 0, result.output
+    assert len(fake.run_calls) == 1
+    assert sorted(fake.run_calls[0].aligned_feature_ids) == ["DECENT", "GOOD"]
+
+    with _open_db(db_path) as session:
+        persisted = session.scalars(select(Feature)).all()
+        assert sorted(feature.quality for feature in persisted) == ["DECENT", "GOOD"]
+        assert len(session.scalars(select(Annotation)).all()) == 2
 
 
 def test_mzml_file_with_no_matching_metadata_row_fails_fast_with_nonzero_exit(

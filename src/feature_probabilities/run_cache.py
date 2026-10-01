@@ -12,9 +12,13 @@ actual rerun-avoidance behavior both `generate-groundtruth` and
   = ?, `sirius_version` = ?).
 - On a hit, return the existing run's `features`/`annotations` without
   calling into the `Sirius` wrapper's `import_spectra`/`run` at all.
-- On a miss, call the wrapper to import and run, then persist a new
-  `sirius_runs` row plus its `features`, `annotations`, and (deduplicated
-  globally by `inchikey`) `molecules` rows.
+- On a miss, call the wrapper to import, restrict the analysis job to the
+  imported features passing the request's `annotated_qualities` filter (if
+  any), and run it, then persist a new `sirius_runs` row plus those
+  `features`, their `annotations`, and (deduplicated globally by `inchikey`)
+  `molecules` rows. The quality filter is part of
+  `analysis_params_checksum`, so a filtered and an unfiltered run never
+  share a cache identity.
 - `force=True` skips the cache lookup entirely and always calls the wrapper,
   regardless of an existing matching row -- this table is never updated in
   place, so this always inserts a new, coexisting `sirius_runs` row rather
@@ -49,7 +53,7 @@ from feature_probabilities.checksums import (
 from feature_probabilities.schema import Annotation, Feature, Molecule, SiriusRun
 
 if TYPE_CHECKING:
-    from PySirius import JobSubmission, LcmsSubmissionParameters
+    from PySirius import DataQuality, JobSubmission, LcmsSubmissionParameters
     from sqlalchemy.orm import Session
 
     from feature_probabilities.sirius import SiriusInterface
@@ -67,6 +71,12 @@ class SiriusRunRequest:
     the config's required version by the CLI's fail-fast version check, per
     issue #9's CLI contract) rather than fetched here -- this module never
     calls `sirius.get_version()`.
+
+    `annotated_qualities` restricts the analysis job, and the persisted
+    `features`, to imported features whose `AlignedFeature.quality` is one
+    of them; `None` analyses every imported feature. Only meaningful for
+    peak-picked (mzML) imports: a pre-picked import carries no quality, so
+    every one of its features is `NOT_APPLICABLE`.
     """
 
     input_file: Path
@@ -80,6 +90,7 @@ class SiriusRunRequest:
     ionization_mode: str
     instrument_type: str
     project_name: str | None = None
+    annotated_qualities: frozenset[DataQuality] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,9 +202,29 @@ def _run_and_persist(
     try:
         sirius.create_project(request.project_path, request.project_name)
         sirius.import_spectra(request.input_file, params=request.import_params)
-        sirius.run(request.analysis_params)
 
         aligned_features = sirius.get_features()
+        job_submission = request.analysis_params
+        if request.annotated_qualities is not None:
+            aligned_features = [
+                aligned_feature
+                for aligned_feature in aligned_features
+                if aligned_feature.quality in request.annotated_qualities
+            ]
+            # Without explicit ids SIRIUS analyses every feature in the
+            # project, the excluded ones included.
+            job_submission = job_submission.model_copy(
+                update={
+                    "aligned_feature_ids": [
+                        aligned_feature.aligned_feature_id
+                        for aligned_feature in aligned_features
+                    ]
+                }
+            )
+        # An empty id list is no restriction to SIRIUS: with nothing passing
+        # the filter, there is nothing to run.
+        if aligned_features:
+            sirius.run(job_submission)
         candidate_rows = sirius.get_structure_candidates(aligned_features)
     finally:
         # A project left open stays registered in the SIRIUS instance for its
@@ -283,12 +314,18 @@ def get_or_create_run(
     `sirius_version`) and `force` is not set, returns that run's existing
     `features`/`annotations` without calling `sirius.import_spectra`/`run`
     at all. Otherwise runs SIRIUS via `sirius` and persists a new,
-    coexisting `sirius_runs` row plus its `features`, `annotations`, and
+    coexisting `sirius_runs` row plus its `features` (only those passing
+    `request.annotated_qualities`, if set), `annotations`, and
     (deduplicated globally by `inchikey`) `molecules` rows.
     """
     input_checksum = input_file_checksum(request.input_file.read_bytes())
     import_checksum = import_params_checksum(request.import_params)
-    analysis_checksum = analysis_params_checksum(request.analysis_params)
+    analysis_checksum = analysis_params_checksum(
+        request.analysis_params,
+        None
+        if request.annotated_qualities is None
+        else [quality.value for quality in request.annotated_qualities],
+    )
 
     if not force:
         existing = _find_matching_run(

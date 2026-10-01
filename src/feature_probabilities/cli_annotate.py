@@ -42,6 +42,10 @@ surface:
   next file that needs it starts a fresh instance (`Sirius.shutdown`).
   SIRIUS 6.5.4 retains heap per analysed feature that only a process exit
   frees, so one long-lived instance grows without bound over a batch.
+- Only aligned features of quality ``GOOD`` or ``DECENT``
+  (`ANNOTATED_QUALITIES`) are submitted to the SIRIUS analysis job and
+  persisted, per SIRIUS's default and the STAR protocol
+  (``sirius_protocol/STAR_Protocol_PySirius.md``, step 10).
 - ``--smoke-test`` annotates into the config's ``[smoke_test]`` database,
   taking ``--mzml-dir``, ``--metadata-csv``, ``--ionization-mode``,
   ``--instrument-type`` and ``--export`` from ``[smoke_test]`` unless
@@ -65,7 +69,7 @@ from typing import TYPE_CHECKING
 import click
 import pandas as pd
 import PySirius
-from PySirius import JobSubmission, LcmsSubmissionParameters
+from PySirius import DataQuality, JobSubmission, LcmsSubmissionParameters
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -116,6 +120,12 @@ if TYPE_CHECKING:
 
 #: Case-insensitive file extension identifying an mzML file in `--mzml-dir`.
 _MZML_SUFFIX = ".mzml"
+
+#: Aligned-feature qualities a field mzML run annotates. SIRIUS's own default
+#: (its GUI offers no other choice), followed by the STAR protocol: `BAD` and
+#: `LOWEST` features are mostly noise and rarely annotatable, and
+#: `NOT_APPLICABLE` never occurs for a peak-picked mzML import.
+ANNOTATED_QUALITIES = frozenset({DataQuality.GOOD, DataQuality.DECENT})
 
 #: `--export` output columns, one row per feature-structure-candidate pair.
 _EXPORT_COLUMNS = (
@@ -335,7 +345,7 @@ def annotate_batch(
 
     Resolves the `kde_models` row to apply (`_resolve_kde_model`) once,
     up front. For each mzML file (processed in sorted-by-name order): looks
-    up its metadata row by filename/`sample_id`
+    up its metadata row by the table's `filename` column
     (`find_metadata_row_for_mzml`), upserts the corresponding
     `species`/`extracts` rows (`upsert_metadata_row`), runs it through
     `run_cache.get_or_create_run` with `source_kind='field_mzml'`,
@@ -407,6 +417,7 @@ def annotate_batch(
             pysirius_client_version=PySirius.__version__,
             ionization_mode=ionization_mode,
             instrument_type=instrument_type,
+            annotated_qualities=ANNOTATED_QUALITIES,
         )
         try:
             result = get_or_create_run(session, sirius, request, force=force)

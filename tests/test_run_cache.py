@@ -11,6 +11,7 @@ from pathlib import Path
 
 from PySirius import (
     AlignedFeature,
+    DataQuality,
     JobSubmission,
     LcmsSubmissionParameters,
     StructureCandidateFormula,
@@ -49,6 +50,7 @@ def _request(
     analysis_params: JobSubmission | None = None,
     import_params: LcmsSubmissionParameters | None = None,
     sirius_version: str = "6.0.0",
+    annotated_qualities: frozenset[DataQuality] | None = None,
 ) -> SiriusRunRequest:
     return SiriusRunRequest(
         input_file=input_file,
@@ -63,6 +65,7 @@ def _request(
         pysirius_client_version="1.0.0",
         ionization_mode="positive",
         instrument_type="Orbitrap",
+        annotated_qualities=annotated_qualities,
     )
 
 
@@ -295,6 +298,55 @@ def test_force_true_calls_the_wrapper_even_with_a_matching_row(tmp_path: Path) -
         assert len(fake.run_calls) == 2
         assert second.from_cache is False
         assert second.run.run_id != first.run.run_id
+
+
+def test_changing_the_quality_filter_forces_a_new_coexisting_run(
+    tmp_path: Path,
+) -> None:
+    """A filtered run annotates a different feature set than an unfiltered one."""
+    input_file = _write_input_file(tmp_path)
+    fake = _fake_for(input_file)
+    engine = create_database(":memory:")
+    with Session(engine) as session:
+        first = get_or_create_run(session, fake, _request(tmp_path, input_file))
+        session.commit()
+
+        filtered = _request(
+            tmp_path,
+            input_file,
+            annotated_qualities=frozenset({DataQuality.GOOD, DataQuality.DECENT}),
+        )
+        second = get_or_create_run(session, fake, filtered)
+        session.commit()
+
+        assert second.from_cache is False
+        assert second.run.run_id != first.run.run_id
+        assert len(fake.import_spectra_calls) == 2
+
+
+def test_no_feature_passing_the_quality_filter_skips_the_analysis_job(
+    tmp_path: Path,
+) -> None:
+    """An empty `aligned_feature_ids` would not restrict SIRIUS to nothing."""
+    input_file = _write_input_file(tmp_path)
+    fake = _fake_for(input_file)
+    engine = create_database(":memory:")
+    with Session(engine) as session:
+        request = _request(
+            tmp_path,
+            input_file,
+            annotated_qualities=frozenset({DataQuality.GOOD}),
+        )
+        first = get_or_create_run(session, fake, request)
+        session.commit()
+
+        assert fake.run_calls == []
+        assert first.features == []
+        assert first.annotations == []
+
+        second = get_or_create_run(session, fake, request)
+        assert second.from_cache is True
+        assert len(fake.import_spectra_calls) == 1
 
 
 def test_molecules_are_deduplicated_globally_by_inchikey(tmp_path: Path) -> None:
