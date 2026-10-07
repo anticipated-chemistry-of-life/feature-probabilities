@@ -193,7 +193,9 @@ def test_find_metadata_row_for_mzml_ignores_the_filename_extension_and_directory
 def test_find_metadata_row_for_mzml_without_a_filename_column_raises_a_clear_error(
     tmp_path: Path,
 ) -> None:
-    csv_path = write_csv(tmp_path, "sample_id,taxon_scientific_name\nEX-001,Panthera leo\n")
+    csv_path = write_csv(
+        tmp_path, "sample_id,taxon_scientific_name\nEX-001,Panthera leo\n"
+    )
     df = load_metadata_csv(csv_path)
 
     with pytest.raises(MetadataError, match="'filename' column"):
