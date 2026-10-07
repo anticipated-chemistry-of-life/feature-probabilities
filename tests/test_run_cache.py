@@ -493,6 +493,82 @@ def test_molecules_are_deduplicated_globally_across_separate_runs(
         assert len(molecules) == 1
 
 
+def test_each_annotation_ties_its_own_feature_to_the_right_molecule(
+    tmp_path: Path,
+) -> None:
+    """A run mixing new Molecules shared by several Features with an already-stored one."""
+    input_file_a = _write_input_file(tmp_path, name="a.mzml", content=b"aaa")
+    input_file_b = _write_input_file(tmp_path, name="b.mzml", content=b"bbb")
+    earlier = _feature("feat-earlier", ion_mass=50.0)
+    f1 = _feature("feat-1", ion_mass=100.0)
+    f2 = _feature("feat-2", ion_mass=200.0)
+    f3 = _feature("feat-3", ion_mass=300.0)
+
+    def row(
+        feature: AlignedFeature, inchikey: str, rank: int, score: float
+    ) -> FeatureStructureCandidate:
+        return FeatureStructureCandidate(
+            feature=feature, candidate=_candidate(inchikey, rank=rank, csi_score=score)
+        )
+
+    fake = FakeSirius(
+        canned_features={input_file_a: [earlier], input_file_b: [f1, f2, f3]},
+        canned_results={
+            input_file_a: [row(earlier, "EXISTING000001", 1, -1.0)],
+            input_file_b: [
+                row(f1, "NEWSHARED00001", 1, -10.0),
+                row(f1, "EXISTING000001", 2, -20.0),
+                row(f2, "NEWSHARED00001", 1, -11.0),
+                row(f3, "EXISTING000001", 1, -12.0),
+                row(f3, "NEWONLY0000001", 2, -13.0),
+            ],
+        },
+    )
+    engine = create_database(":memory:")
+    with Session(engine) as session:
+        get_or_create_run(session, fake, _request(tmp_path, input_file_a))
+        session.commit()
+        existing_id = session.scalars(
+            select(Molecule.molecule_id).where(Molecule.inchikey == "EXISTING000001")
+        ).one()
+
+        result = get_or_create_run(session, fake, _request(tmp_path, input_file_b))
+        session.commit()
+
+        molecule_ids = dict(
+            session.execute(select(Molecule.inchikey, Molecule.molecule_id))
+            .tuples()
+            .all()
+        )
+        assert sorted(molecule_ids) == [
+            "EXISTING000001",
+            "NEWONLY0000001",
+            "NEWSHARED00001",
+        ]
+        assert molecule_ids["EXISTING000001"] == existing_id
+        inchikey_by_id = {value: key for key, value in molecule_ids.items()}
+        feature_by_id = {
+            feature.feature_id: feature.external_feature_id
+            for feature in result.features
+        }
+        persisted = {
+            (
+                feature_by_id[annotation.feature_id],
+                inchikey_by_id[annotation.molecule_id],
+                annotation.rank,
+                annotation.csi_score,
+            )
+            for annotation in result.annotations
+        }
+        assert persisted == {
+            ("feat-1", "NEWSHARED00001", 1, -10.0),
+            ("feat-1", "EXISTING000001", 2, -20.0),
+            ("feat-2", "NEWSHARED00001", 1, -11.0),
+            ("feat-3", "EXISTING000001", 1, -12.0),
+            ("feat-3", "NEWONLY0000001", 2, -13.0),
+        }
+
+
 def test_newly_inserted_molecule_smiles_is_rdkit_canonicalized_and_stereo_stripped(
     tmp_path: Path,
 ) -> None:

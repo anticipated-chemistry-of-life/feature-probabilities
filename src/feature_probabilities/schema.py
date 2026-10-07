@@ -143,6 +143,12 @@ class Feature(Base):
     )
 
 
+#: Id sequences of `molecules` and `annotations`, exposed so ids can also be
+#: allocated in bulk (`nextval` over many rows) rather than one row at a time.
+MOLECULE_ID_SEQUENCE = sa.Sequence("molecules_molecule_id_seq")
+ANNOTATION_ID_SEQUENCE = sa.Sequence("annotations_annotation_id_seq")
+
+
 class Molecule(Base):
     """The globally deduplicated, skeleton-level chemical identity of a structure candidate.
 
@@ -156,7 +162,7 @@ class Molecule(Base):
     __tablename__ = "molecules"
 
     molecule_id: Mapped[int] = mapped_column(
-        sa.Integer, sa.Sequence("molecules_molecule_id_seq"), primary_key=True
+        sa.Integer, MOLECULE_ID_SEQUENCE, primary_key=True
     )
     inchikey: Mapped[str] = mapped_column(
         sa.String(INCHIKEY_FIRST_BLOCK_LENGTH), unique=True
@@ -176,7 +182,7 @@ class Annotation(Base):
     )
 
     annotation_id: Mapped[int] = mapped_column(
-        sa.Integer, sa.Sequence("annotations_annotation_id_seq"), primary_key=True
+        sa.Integer, ANNOTATION_ID_SEQUENCE, primary_key=True
     )
     feature_id: Mapped[int] = mapped_column(sa.ForeignKey("features.feature_id"))
     molecule_id: Mapped[int] = mapped_column(sa.ForeignKey("molecules.molecule_id"))
