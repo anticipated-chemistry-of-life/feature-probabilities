@@ -21,7 +21,10 @@ non-empty result. The two are configured independently, matching real
 SIRIUS: a feature can exist (`get_features`) with zero structure candidates
 (absent from `get_structure_candidates`). `get_structure_candidates` returns
 only the canned rows whose feature is among the features it is asked about,
-as the real wrapper only ever reads candidates for those.
+as the real wrapper only ever reads candidates for those -- and, like the
+real wrapper, only each such feature's Top-k: its canned rows stand for
+SIRIUS's full candidate list, of which the `top_k` best by CSI:FingerID
+score come back, best first.
 
 Every call that would talk to a real SIRIUS process is recorded
 (`create_project_calls`, `import_spectra_calls`, `run_calls`), so a test can
@@ -182,14 +185,25 @@ class FakeSirius:
         return list(self.default_features)
 
     def get_structure_candidates(
-        self, features: Sequence[AlignedFeature]
+        self, features: Sequence[AlignedFeature], *, top_k: int
     ) -> list[FeatureStructureCandidate]:
         self._require_project()
         rows = self.default_results
         if self._current_spectra_file is not None:
             rows = self.canned_results.get(self._current_spectra_file, rows)
         requested = {feature.aligned_feature_id for feature in features}
-        return [row for row in rows if row.feature.aligned_feature_id in requested]
+        # PySirius types `aligned_feature_id` as optional.
+        rows_by_feature: dict[str | None, list[FeatureStructureCandidate]] = {}
+        for row in rows:
+            if row.feature.aligned_feature_id in requested:
+                rows_by_feature.setdefault(row.feature.aligned_feature_id, []).append(
+                    row
+                )
+        return [
+            row
+            for feature_rows in rows_by_feature.values()
+            for row in sorted(feature_rows, key=_best_csi_score_first)[:top_k]
+        ]
 
     def _require_project(self) -> None:
         if not self._has_project:
@@ -199,3 +213,13 @@ class FakeSirius:
         if not self.running:
             self.running = True
             self.instances_started += 1
+
+
+def _best_csi_score_first(row: FeatureStructureCandidate) -> tuple[float, float]:
+    """Sort key ranking a feature's candidates as SIRIUS does: highest CSI:FingerID score first, ties by rank."""
+    score = row.candidate.csi_score
+    rank = row.candidate.rank
+    return (
+        float("inf") if score is None else -score,
+        float("inf") if rank is None else rank,
+    )

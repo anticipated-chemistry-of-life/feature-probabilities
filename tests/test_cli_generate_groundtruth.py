@@ -39,6 +39,9 @@ CONFIG_TOML = """
 db_path = "{db_path}"
 required_sirius_version = "6.0.0"
 massspecgym_revision = "unused-because-fetch-is-monkeypatched"
+
+[sirius]
+top_k = 200
 """
 
 

@@ -38,6 +38,14 @@ ionization_mode = "positive"
 instrument_type = "Orbitrap"
 export_path = "db/smoke_test/feature_probabilities.csv"
 
+[sirius]
+# Top-k (CONTEXT.md): how many best-ranked structure candidates per Feature
+# every SIRIUS run -- ground truth and field alike -- retains; lower-ranked
+# candidates never become Annotations. Part of each run's caching key, so
+# changing it reruns SIRIUS for every input. See
+# docs/adr/0001-top-k-structure-candidates.md.
+top_k = 200
+
 [sirius.analysis_params]
 # SIRIUS `JobSubmission` analysis parameters, sent verbatim with every run of
 # every SIRIUS-touching executable. Seeded from SIRIUS 6.3.3's own

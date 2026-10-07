@@ -15,10 +15,11 @@ actual rerun-avoidance behavior both `generate-groundtruth` and
 - On a miss, call the wrapper to import, restrict the analysis job to the
   imported features passing the request's `annotated_qualities` filter (if
   any), and run it, then persist a new `sirius_runs` row plus those
-  `features`, their `annotations`, and (deduplicated globally by `inchikey`)
-  `molecules` rows. The quality filter is part of
-  `analysis_params_checksum`, so a filtered and an unfiltered run never
-  share a cache identity.
+  `features`, the annotations of each one's `top_k` best-ranked structure
+  candidates (CONTEXT.md's Top-k), and (deduplicated globally by `inchikey`)
+  `molecules` rows. The quality filter and `top_k` are both part of
+  `analysis_params_checksum`, so runs differing in either never share a
+  cache identity.
 - `force=True` skips the cache lookup entirely and always calls the wrapper,
   regardless of an existing matching row -- this table is never updated in
   place, so this always inserts a new, coexisting `sirius_runs` row rather
@@ -77,6 +78,9 @@ class SiriusRunRequest:
     of them; `None` analyses every imported feature. Only meaningful for
     peak-picked (mzML) imports: a pre-picked import carries no quality, so
     every one of its features is `NOT_APPLICABLE`.
+
+    `top_k` is the Top-k (CONTEXT.md): only each feature's `top_k`
+    best-ranked structure candidates become `annotations`.
     """
 
     input_file: Path
@@ -89,6 +93,7 @@ class SiriusRunRequest:
     pysirius_client_version: str
     ionization_mode: str
     instrument_type: str
+    top_k: int
     project_name: str | None = None
     annotated_qualities: frozenset[DataQuality] | None = None
 
@@ -225,7 +230,9 @@ def _run_and_persist(
         # the filter, there is nothing to run.
         if aligned_features:
             sirius.run(job_submission)
-        candidate_rows = sirius.get_structure_candidates(aligned_features)
+        candidate_rows = sirius.get_structure_candidates(
+            aligned_features, top_k=request.top_k
+        )
     finally:
         # A project left open stays registered in the SIRIUS instance for its
         # whole lifetime, holding its database open even once the temporary
@@ -325,6 +332,7 @@ def get_or_create_run(
         None
         if request.annotated_qualities is None
         else [quality.value for quality in request.annotated_qualities],
+        top_k=request.top_k,
     )
 
     if not force:

@@ -3,8 +3,8 @@
 Covers exactly the SIRIUS interaction itself -- attach-or-start plus login,
 shutdown (and lazy restart after it), project lifecycle, importing spectra
 (both the pre-picked and mzML/peak-picking paths), submitting an analysis
-job, and reading back structure candidates joined with their feature's ion
-mass. It deliberately does **not**
+job, and reading back each feature's Top-k structure candidates joined with
+its ion mass. It deliberately does **not**
 know about rerun-avoidance caching or DuckDB persistence (`sirius_runs`
 cache lookups and `features`/`annotations`/`molecules` row persistence): that
 ties this wrapper together with `checksums.py` and `schema.py` in a later
@@ -161,16 +161,18 @@ class SiriusInterface(Protocol):
         ...
 
     def get_structure_candidates(
-        self, features: Sequence[AlignedFeature]
+        self, features: Sequence[AlignedFeature], *, top_k: int
     ) -> list[FeatureStructureCandidate]:
-        """Every (feature, structure candidate) pair for `features` in the current project.
+        """Each of `features`' Top-k (feature, structure candidate) pairs in the current project.
 
-        Joins each of `features` (as returned by `get_features`) with its own
-        structure candidates, since `StructureCandidateFormula` does not carry
-        ion mass on its own -- a feature with zero structure candidates
-        contributes no rows here (see `get_features` for those). Callers pass
-        only the features the analysis job ran on: any other feature has no
-        results to read.
+        Per feature: at most `top_k` structure candidates, its best by
+        CSI:FingerID score -- ranks 1..`top_k` -- in rank order (CONTEXT.md's
+        Top-k, ADR 0001). Joins each of `features` (as returned by
+        `get_features`) with its structure candidates, since
+        `StructureCandidateFormula` does not carry ion mass on its own -- a
+        feature with zero structure candidates contributes no rows here (see
+        `get_features` for those). Callers pass only the features the
+        analysis job ran on: any other feature has no results to read.
         """
         ...
 
@@ -227,6 +229,13 @@ def _credentials_from_env() -> AccountCredentials:
             "(e.g. in a .env file) to log into a SIRIUS account."
         )
     return AccountCredentials(username=username, password=password)
+
+
+#: Sort for SIRIUS's paged structure-candidates endpoint that puts a
+#: feature's rank-1 candidate first. Spelled out rather than relying on the
+#: unsorted default, and deliberately not `rank,asc`: SIRIUS 6.5.4 inverts
+#: that one, returning the *worst* candidates first (ADR 0001).
+_BEST_CSI_SCORE_FIRST = "csiScore,desc"
 
 
 class Sirius:
@@ -311,18 +320,24 @@ class Sirius:
         return self._api.features().get_aligned_features(project_id)
 
     def get_structure_candidates(
-        self, features: Sequence[AlignedFeature]
+        self, features: Sequence[AlignedFeature], *, top_k: int
     ) -> list[FeatureStructureCandidate]:
         project_id = self._require_project_id()
         features_api = self._api.features()
         rows: list[FeatureStructureCandidate] = []
         for feature in features:
-            candidates = features_api.get_structure_candidates(
-                project_id, feature.aligned_feature_id
+            # Only the first page of `top_k` is ever read: SIRIUS still
+            # stores every candidate, but nothing past rank k is transferred.
+            page = features_api.get_structure_candidates_page(
+                project_id,
+                feature.aligned_feature_id,
+                page=0,
+                size=top_k,
+                sort=[_BEST_CSI_SCORE_FIRST],
             )
             rows.extend(
                 FeatureStructureCandidate(feature=feature, candidate=candidate)
-                for candidate in candidates
+                for candidate in page.content or []
             )
         return rows
 

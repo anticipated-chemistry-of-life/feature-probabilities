@@ -79,7 +79,7 @@ def test_structure_candidates_carry_both_csi_score_and_ion_mass_on_one_row() -> 
     fake.import_spectra(Path("chunk.mgf"))
     fake.run(JobSubmission())
 
-    rows = fake.get_structure_candidates(fake.get_features())
+    rows = fake.get_structure_candidates(fake.get_features(), top_k=200)
 
     assert len(rows) >= 1
     row = rows[0]
@@ -113,11 +113,11 @@ def test_structure_candidates_use_the_canned_result_configured_for_the_imported_
 
     fake.import_spectra(Path("a.mgf"))
     fake.run(JobSubmission())
-    rows_a = fake.get_structure_candidates(fake.get_features())
+    rows_a = fake.get_structure_candidates(fake.get_features(), top_k=200)
 
     fake.import_spectra(Path("b.mgf"))
     fake.run(JobSubmission())
-    rows_b = fake.get_structure_candidates(fake.get_features())
+    rows_b = fake.get_structure_candidates(fake.get_features(), top_k=200)
 
     assert [row.candidate.inchi_key for row in rows_a] == ["AAAAAAAAAAAAAA"]
     assert [row.candidate.inchi_key for row in rows_b] == ["BBBBBBBBBBBBBB"]
@@ -143,7 +143,7 @@ def test_get_features_reaches_a_feature_with_zero_structure_candidates() -> None
     fake.import_spectra(Path("a.mgf"))
 
     features = fake.get_features()
-    rows = fake.get_structure_candidates(features)
+    rows = fake.get_structure_candidates(features, top_k=200)
 
     assert [feature.aligned_feature_id for feature in features] == ["candidate-free"]
     assert rows == []
@@ -167,7 +167,7 @@ def test_get_version_defaults_without_requiring_a_project() -> None:
         lambda fake: fake.import_spectra(Path("chunk.mgf")),
         lambda fake: fake.run(JobSubmission()),
         lambda fake: fake.get_features(),
-        lambda fake: fake.get_structure_candidates([]),
+        lambda fake: fake.get_structure_candidates([], top_k=200),
     ],
 )
 def test_project_scoped_calls_before_create_project_raise(call) -> None:

@@ -10,8 +10,9 @@ overriding individual keys. Precedence, highest to lowest:
 3. Hardcoded defaults baked into this module (currently: ``"models/kde_model.pkl"``
    for ``kde_output_path``, and empty ``{}`` dicts for the
    ``[sirius.analysis_params]``/``[sirius.import_params]`` tables, when a
-   config file omits them; ``db_path``, ``required_sirius_version``, and
-   ``massspecgym_revision`` have no such default and are required).
+   config file omits them; ``db_path``, ``required_sirius_version``,
+   ``massspecgym_revision``, and ``[sirius] top_k`` have no such default and
+   are required).
 
 The optional ``[smoke_test]`` section configures every CLI's ``--smoke-test``
 mode (:class:`SmokeTestConfig`, :func:`for_smoke_test`); when present, every
@@ -61,8 +62,14 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class SiriusConfig:
-    """Nested SIRIUS parameter defaults from the ``[sirius.*]`` TOML sections."""
+    """The ``[sirius]`` section: its ``top_k`` plus the nested ``[sirius.*]`` parameter tables.
 
+    ``top_k`` is the Top-k (CONTEXT.md): how many best-ranked structure
+    candidates per Feature a SIRIUS run retains. Part of every SIRIUS run's
+    identity, so it is required with no default (ADR 0001).
+    """
+
+    top_k: int
     analysis_params: TOMLTable = field(default_factory=dict)
     import_params: TOMLTable = field(default_factory=dict)
 
@@ -153,11 +160,29 @@ def load_config(
         massspecgym_revision=str(merged["massspecgym_revision"]),
         kde_output_path=str(merged["kde_output_path"]),
         sirius=SiriusConfig(
+            top_k=_top_k(sirius_data.get("top_k"), path),
             analysis_params=dict(sirius_data.get("analysis_params") or {}),
             import_params=dict(sirius_data.get("import_params") or {}),
         ),
         smoke_test=_smoke_test_config(merged.get("smoke_test"), path),
     )
+
+
+def _top_k(value: TOMLValue, path: Path) -> int:
+    """``[sirius] top_k``, which must be present and a positive integer."""
+    if value is None:
+        raise ConfigError(f"Config file {path} is missing required key: [sirius] top_k")
+    return _positive_int(value, "[sirius] top_k", path)
+
+
+def _positive_int(value: TOMLValue, key_label: str, path: Path) -> int:
+    """`value` if it is a positive integer, else a `ConfigError` naming `key_label`."""
+    # `bool` subclasses `int`: `key = true` must not read as 1.
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigError(
+            f"Config file {path}: {key_label} must be a positive integer, got {value!r}"
+        )
+    return value
 
 
 def _smoke_test_config(data: TOMLValue, path: Path) -> SmokeTestConfig | None:
@@ -178,16 +203,11 @@ def _smoke_test_config(data: TOMLValue, path: Path) -> SmokeTestConfig | None:
             f"{', '.join(missing)}"
         )
 
-    spectra_per_instrument_type = data["spectra_per_instrument_type"]
-    if (
-        not isinstance(spectra_per_instrument_type, int)
-        or isinstance(spectra_per_instrument_type, bool)
-        or spectra_per_instrument_type < 1
-    ):
-        raise ConfigError(
-            f"Config file {path}: [smoke_test] spectra_per_instrument_type must "
-            f"be a positive integer, got {spectra_per_instrument_type!r}"
-        )
+    spectra_per_instrument_type = _positive_int(
+        data["spectra_per_instrument_type"],
+        "[smoke_test] spectra_per_instrument_type",
+        path,
+    )
 
     return SmokeTestConfig(
         **{key: str(data[key]) for key in _SMOKE_TEST_STRING_KEYS},

@@ -49,6 +49,9 @@ CONFIG_TOML = """
 db_path = "{db_path}"
 required_sirius_version = "6.0.0"
 massspecgym_revision = "abc123"
+
+[sirius]
+top_k = 200
 """
 
 BASE_CSV = """sample_id,filename,taxon_scientific_name,ncbi_taxid,family,organ

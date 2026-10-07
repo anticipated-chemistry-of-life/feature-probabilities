@@ -51,6 +51,7 @@ def _request(
     import_params: LcmsSubmissionParameters | None = None,
     sirius_version: str = "6.0.0",
     annotated_qualities: frozenset[DataQuality] | None = None,
+    top_k: int = 200,
 ) -> SiriusRunRequest:
     return SiriusRunRequest(
         input_file=input_file,
@@ -66,6 +67,7 @@ def _request(
         ionization_mode="positive",
         instrument_type="Orbitrap",
         annotated_qualities=annotated_qualities,
+        top_k=top_k,
     )
 
 
@@ -347,6 +349,87 @@ def test_no_feature_passing_the_quality_filter_skips_the_analysis_job(
         second = get_or_create_run(session, fake, request)
         assert second.from_cache is True
         assert len(fake.import_spectra_calls) == 1
+
+
+def test_changing_top_k_forces_a_new_coexisting_run(tmp_path: Path) -> None:
+    """A run kept under one Top-k must never be reused under another (ADR 0001)."""
+    input_file = _write_input_file(tmp_path)
+    fake = _fake_for(input_file)
+    engine = create_database(":memory:")
+    with Session(engine) as session:
+        first = get_or_create_run(
+            session, fake, _request(tmp_path, input_file, top_k=2)
+        )
+        session.commit()
+
+        same_k = get_or_create_run(
+            session, fake, _request(tmp_path, input_file, top_k=2)
+        )
+        other_k = get_or_create_run(
+            session, fake, _request(tmp_path, input_file, top_k=3)
+        )
+        session.commit()
+
+        assert same_k.from_cache is True
+        assert same_k.run.run_id == first.run.run_id
+        assert other_k.from_cache is False
+        assert other_k.run.run_id != first.run.run_id
+        assert len(fake.import_spectra_calls) == 2
+
+
+def test_only_each_features_top_k_structure_candidates_become_annotations(
+    tmp_path: Path,
+) -> None:
+    """Top-k keeps a Feature's k best CSI:FingerID scores, ranks 1..k (ADR 0001)."""
+    input_file = _write_input_file(tmp_path)
+    deep = _feature("feat-deep", ion_mass=100.0)
+    shallow = _feature("feat-shallow", ion_mass=200.0)
+    fake = FakeSirius(
+        canned_features={input_file: [deep, shallow]},
+        canned_results={
+            input_file: [
+                # SIRIUS's full list for `deep`, deliberately not in rank order.
+                FeatureStructureCandidate(
+                    feature=deep,
+                    candidate=_candidate("RANKTHREE00001", rank=3, csi_score=-30.0),
+                ),
+                FeatureStructureCandidate(
+                    feature=deep,
+                    candidate=_candidate("RANKONE0000001", rank=1, csi_score=-10.0),
+                ),
+                FeatureStructureCandidate(
+                    feature=deep,
+                    candidate=_candidate("RANKTWO0000001", rank=2, csi_score=-20.0),
+                ),
+                FeatureStructureCandidate(
+                    feature=shallow,
+                    candidate=_candidate("ONLYONE0000001", rank=1, csi_score=-5.0),
+                ),
+            ]
+        },
+    )
+    engine = create_database(":memory:")
+    with Session(engine) as session:
+        result = get_or_create_run(
+            session, fake, _request(tmp_path, input_file, top_k=2)
+        )
+        session.commit()
+
+        feature_id = {
+            feature.external_feature_id: feature.feature_id
+            for feature in result.features
+        }
+        kept = sorted(
+            (annotation.feature_id, annotation.rank, annotation.csi_score)
+            for annotation in result.annotations
+        )
+        assert kept == [
+            (feature_id["feat-deep"], 1, -10.0),
+            (feature_id["feat-deep"], 2, -20.0),
+            (feature_id["feat-shallow"], 1, -5.0),
+        ]
+        inchikeys = set(session.scalars(select(Molecule.inchikey)))
+        assert "RANKTHREE00001" not in inchikeys
 
 
 def test_molecules_are_deduplicated_globally_by_inchikey(tmp_path: Path) -> None:

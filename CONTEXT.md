@@ -26,6 +26,10 @@ The physical sample (a species plus, e.g., organ) that one or more SIRIUS runs a
 One execution of SIRIUS against one input spectra file (an mzML or an MGF chunk) with one fixed parameter set, identified by the rerun-avoidance caching key. A **field run** processes a real mzML tied to an Extract; a **ground truth run** processes a MassSpecGym chunk and has no Extract. Reprocessing the same input file with different parameters produces a new, coexisting SIRIUS run — never overwrites a prior one.
 _Avoid_: job (SIRIUS's own API term for the async task that executes a run — a run is the durable record, a job is how it got produced)
 
+**Top-k**:
+The maximum number of best-ranked (by CSI:FingerID score) structure candidates per Feature that a SIRIUS run retains; lower-ranked structure candidates never become Annotations. Part of a SIRIUS run's parameter set, so runs with different k are different SIRIUS runs. Applies to field runs and ground truth runs alike, so the calibration score is only ever fitted on and applied to the same candidate population. A ground truth Feature whose true structure ranks below k has no correct assignment.
+_Avoid_: candidate cap, candidate limit, max candidates
+
 **Ground truth set**:
 MassSpecGym v1.5, the benchmark dataset of spectra with known true structures, used to fit the calibration score's KDE.
 

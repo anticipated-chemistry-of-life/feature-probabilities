@@ -36,6 +36,9 @@ db_path = "{db_path}"
 required_sirius_version = "6.0.0"
 massspecgym_revision = "abc123"
 kde_output_path = "{kde_output_path}"
+
+[sirius]
+top_k = 200
 """
 
 

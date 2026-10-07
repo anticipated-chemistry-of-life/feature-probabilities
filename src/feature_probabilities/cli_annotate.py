@@ -46,6 +46,10 @@ surface:
   (`ANNOTATED_QUALITIES`) are submitted to the SIRIUS analysis job and
   persisted, per SIRIUS's default and the STAR protocol
   (``sirius_protocol/STAR_Protocol_PySirius.md``, step 10).
+- Each analysed feature keeps only its ``config.sirius.top_k`` best-ranked
+  structure candidates (CONTEXT.md's Top-k), the same k
+  ``generate-groundtruth`` applies, so the calibration score is only
+  applied to the candidate population it was fitted on.
 - ``--smoke-test`` annotates into the config's ``[smoke_test]`` database,
   taking ``--mzml-dir``, ``--metadata-csv``, ``--ionization-mode``,
   ``--instrument-type`` and ``--export`` from ``[smoke_test]`` unless
@@ -418,6 +422,7 @@ def annotate_batch(
             ionization_mode=ionization_mode,
             instrument_type=instrument_type,
             annotated_qualities=ANNOTATED_QUALITIES,
+            top_k=config.sirius.top_k,
         )
         try:
             result = get_or_create_run(session, sirius, request, force=force)

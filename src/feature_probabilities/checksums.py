@@ -11,7 +11,8 @@ Each ``sirius_runs`` row is keyed by three sha256 checksums:
 - :func:`analysis_params_checksum` — the canonical JSON of the SIRIUS
   ``JobSubmission`` object, which already serializes every SIRIUS analysis
   parameter, plus the feature-quality filter selecting which imported
-  features that job runs on (field runs only).
+  features that job runs on (field runs only) and the Top-k selecting how
+  many structure candidates per feature the run keeps.
 
 This module operates purely on bytes and plain ``to_dict``-shaped objects: it
 imports neither DuckDB nor PySirius, so it can be exercised without either
@@ -74,9 +75,16 @@ _NON_IDENTIFYING_ANALYSIS_KEYS = frozenset({"recompute"})
 #: Not a `JobSubmission` field, so it can never collide with one.
 _ANNOTATED_QUALITIES_KEY = "annotated_qualities"
 
+#: Key the Top-k is stored under in the checksummed payload; likewise not a
+#: `JobSubmission` field.
+_TOP_K_KEY = "top_k"
+
 
 def analysis_params_checksum(
-    params: ToDictConvertible, annotated_qualities: Collection[str] | None = None
+    params: ToDictConvertible,
+    annotated_qualities: Collection[str] | None = None,
+    *,
+    top_k: int,
 ) -> str:
     """Sha256 hex digest of a ``JobSubmission``-shaped object.
 
@@ -87,8 +95,11 @@ def analysis_params_checksum(
     `annotated_qualities` are the `DataQuality` values a run restricts its
     analysis job to. A different filter annotates a different feature set,
     so it is part of the identity; `None` (no filter, every imported feature
-    analysed) leaves the payload -- and so every existing checksum --
-    unchanged.
+    analysed) leaves it out of the payload.
+
+    `top_k` is the Top-k: how many best-ranked structure candidates per
+    feature the run keeps. A different k keeps a different candidate set,
+    so it is always part of the identity (ADR 0001).
     """
     payload = {
         key: value
@@ -97,6 +108,7 @@ def analysis_params_checksum(
     }
     if annotated_qualities is not None:
         payload[_ANNOTATED_QUALITIES_KEY] = sorted(annotated_qualities)
+    payload[_TOP_K_KEY] = top_k
     return _canonical_json_checksum(payload)
 
 

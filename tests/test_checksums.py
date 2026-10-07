@@ -43,7 +43,9 @@ def test_analysis_params_checksum_is_independent_of_key_insertion_order() -> Non
     ordered = FakeParams({"ppm_max": 10.0, "recompute": False})
     reordered = FakeParams({"recompute": False, "ppm_max": 10.0})
 
-    assert analysis_params_checksum(ordered) == analysis_params_checksum(reordered)
+    assert analysis_params_checksum(ordered, top_k=200) == analysis_params_checksum(
+        reordered, top_k=200
+    )
 
 
 def test_import_params_checksum_differs_when_a_single_field_differs() -> None:
@@ -57,7 +59,9 @@ def test_analysis_params_checksum_differs_when_a_single_field_differs() -> None:
     base = FakeParams({"ppm_max": 10.0, "recompute": False})
     changed = FakeParams({"ppm_max": 15.0, "recompute": False})
 
-    assert analysis_params_checksum(base) != analysis_params_checksum(changed)
+    assert analysis_params_checksum(base, top_k=200) != analysis_params_checksum(
+        changed, top_k=200
+    )
 
 
 def test_import_params_checksum_returns_none_for_the_ground_truth_case() -> None:

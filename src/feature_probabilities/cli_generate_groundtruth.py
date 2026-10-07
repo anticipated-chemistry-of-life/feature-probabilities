@@ -31,6 +31,8 @@ structure) plus issue #21's remaining batch-control surface:
   database, then processes only the first ``spectra_per_instrument_type``
   spectra of every instrument type (TSV order), so the whole pipeline can
   be exercised in minutes. It rejects ``--db`` and ``--instrument-type``.
+- Each feature keeps only its ``config.sirius.top_k`` best-ranked structure
+  candidates (CONTEXT.md's Top-k; docs/adr/0001-top-k-structure-candidates.md).
 
 A feature's true structure is looked up by ``external_feature_id`` against
 a MassSpecGym-``identifier``-keyed map built once from the fetched TSV --
@@ -297,6 +299,7 @@ def generate_groundtruth(
                 pysirius_client_version=PySirius.__version__,
                 ionization_mode=_IONIZATION_MODE,
                 instrument_type=chunk_instrument_type,
+                top_k=config.sirius.top_k,
             )
             try:
                 result = get_or_create_run(session, sirius, request, force=force)

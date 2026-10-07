@@ -31,6 +31,7 @@ failures before it existed:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
@@ -74,6 +75,24 @@ QTOF_PRECURSOR_MZ = 251.0913
 #: with `400 Cannot create Job Command!`; that is the failure this test
 #: exists to catch.
 REPO_CONFIG = REPO_ROOT / "config.toml"
+
+#: Small enough that the fixture spectrum's BIO search returns more
+#: structure candidates than this, so the Top-k truncation is exercised.
+TEST_TOP_K = 3
+
+
+def _repo_config_with_top_k(tmp_path: Path, top_k: int) -> Path:
+    """The checked-in config with only its `[sirius] top_k` value replaced."""
+    text, replaced = re.subn(
+        r"(?m)^top_k\s*=\s*\d+\s*$", f"top_k = {top_k}", REPO_CONFIG.read_text()
+    )
+    if replaced != 1:
+        raise AssertionError(
+            f"expected exactly one `top_k = <int>` line in config.toml, found {replaced}"
+        )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(text)
+    return config_path
 
 
 def _sirius_available() -> bool:
@@ -133,6 +152,12 @@ def _open_project_ids(sirius: Sirius) -> set[str]:
 def test_single_qtof_massspecgym_spectrum_runs_through_real_sirius(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Also pins the real wrapper's Top-k read-back (ADR 0001).
+
+    SIRIUS's paged-candidates sort is inverted (`rank,asc` returns the
+    *worst* candidates first), so a wrong sort or page size keeps the wrong
+    candidates -- only a real SIRIUS can catch that, the fake cannot.
+    """
     db_path = tmp_path / "groundtruth.duckdb"
     monkeypatch.setattr(
         cli_generate_groundtruth,
@@ -143,7 +168,7 @@ def test_single_qtof_massspecgym_spectrum_runs_through_real_sirius(
         main,
         [
             "--config",
-            str(REPO_CONFIG),
+            str(_repo_config_with_top_k(tmp_path, TEST_TOP_K)),
             "--db",
             str(db_path),
             "--instrument-type",
@@ -177,7 +202,12 @@ def test_single_qtof_massspecgym_spectrum_runs_through_real_sirius(
         assert {annotation.feature_id for annotation in annotations} == {
             feature.feature_id
         }
-        assert min(annotation.rank for annotation in annotations) == 1
+        ranked = sorted(
+            (annotation.rank, annotation.csi_score) for annotation in annotations
+        )
+        assert [rank for rank, _ in ranked] == [1, 2, 3]
+        scores = [score for _, score in ranked]
+        assert scores == sorted(scores, reverse=True)
 
 
 def test_close_project_releases_the_project_from_the_sirius_instance(
