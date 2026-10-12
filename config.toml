@@ -119,7 +119,7 @@ enabled = true
 [sirius.analysis_params.structure_db_search_params]
 enabled = true
 structure_search_dbs = ["BIO"]
-tag_structures_with_lipid_class = true
+tag_structures_with_lipid_class = false
 expansive_search_confidence_mode = "APPROXIMATE"
 
 # Tools this pipeline does not run.
