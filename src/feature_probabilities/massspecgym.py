@@ -12,7 +12,7 @@ contents itself.
 :func:`parse_massspecgym_spectra` and :func:`write_sirius_chunks` (or the
 :func:`chunk_massspecgym_for_sirius` convenience that composes both) turn
 that TSV into SIRIUS-ready input: one ``matchms.Spectrum`` per row, split into
-``instrument_type``-grouped chunks of up to 10,000 spectra each
+``instrument_type``-grouped chunks of up to 2,000 spectra each
 (:data:`DEFAULT_SIRIUS_CHUNK_SIZE`), written as MGF files -- matching
 ``ms2mol-evaluation``'s existing chunking pattern (generalized across every
 instrument type present, not hardcoded to Orbitrap/QTOF). Each spectrum
@@ -177,7 +177,11 @@ _EXPORTED_MGF_FIELDS = frozenset(
     }
 )
 
-DEFAULT_SIRIUS_CHUNK_SIZE = 10_000
+#: Down from 10,000: SIRIUS 6.5.4 can deadlock its job pool when a chunk
+#: holds many ElGordo-detected lipids (`FingerblastSearchJJob` workers all
+#: block awaiting lipid-tagging subjobs that no free worker can run).
+#: Smaller chunks make that pile-up less likely; they do not rule it out.
+DEFAULT_SIRIUS_CHUNK_SIZE = 2_000
 
 
 class MassSpecGymParseError(Exception):
