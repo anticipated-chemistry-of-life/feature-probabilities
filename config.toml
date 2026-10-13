@@ -96,6 +96,9 @@ inject_spec_lib_match_formulas = true
 min_score_to_inject_spec_lib_match = 0.7
 min_peaks_to_inject_spec_lib_match = 6
 
+# Sent to SIRIUS as `configMap` entries, not the `useHeuristic` object:
+# SIRIUS 6.5.4's server drops the object's values and runs with 0/0
+# (`sirius.job_submission_from_config`).
 [sirius.analysis_params.formula_id_params.use_heuristic]
 use_heuristic_above_mz = 300
 use_only_heuristic_above_mz = 650

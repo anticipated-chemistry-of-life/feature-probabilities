@@ -29,7 +29,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from dotenv import load_dotenv
 from PySirius import (
@@ -41,7 +41,11 @@ from PySirius import (
     PySiriusAPI,
     SiriusSDK,
     StructureCandidateFormula,
+    UseHeuristic,
 )
+
+if TYPE_CHECKING:
+    from feature_probabilities.config import TOMLTable
 
 
 class NoActiveProjectError(RuntimeError):
@@ -218,6 +222,52 @@ def require_matching_sirius_version(
             f"this config's required_sirius_version {required_version!r}. "
             "Install the required SIRIUS version or update the config."
         )
+
+
+def job_submission_from_config(
+    analysis_params: TOMLTable, *, recompute: bool
+) -> JobSubmission:
+    """`[sirius.analysis_params]` as a `JobSubmission` SIRIUS reads correctly.
+
+    Equivalent to `JobSubmission(**analysis_params, recompute=recompute)`,
+    except `formula_id_params.use_heuristic` is sent as `configMap` string
+    entries (merged over any `config_map` already configured) instead of
+    the `useHeuristic` object. SIRIUS 6.5.4's REST server deserializes
+    requests with Jackson 3, which leaves the `final` fields of SIRIUS's
+    `UseHeuristic` class at its no-arg constructor's `0`: the object form
+    reaches the SIRIUS command as `--UseHeuristic.useHeuristicAboveMz=0
+    --UseHeuristic.useOnlyHeuristicAboveMz=0` whatever values it carries.
+    `configMap` strings bypass that deserialization.
+    """
+    params = dict(analysis_params)
+    formula_id_params = params.get("formula_id_params")
+    if isinstance(formula_id_params, dict) and (
+        formula_id_params.get("use_heuristic") is not None
+    ):
+        formula_id_params = dict(formula_id_params)
+        # Validated through PySirius' model so types and key spellings are
+        # checked exactly as they were when sent as the object form.
+        use_heuristic = UseHeuristic.model_validate(
+            formula_id_params.pop("use_heuristic")
+        )
+        params["formula_id_params"] = formula_id_params
+        thresholds = {
+            "UseHeuristic.useHeuristicAboveMz": use_heuristic.use_heuristic_above_mz,
+            "UseHeuristic.useOnlyHeuristicAboveMz": (
+                use_heuristic.use_only_heuristic_above_mz
+            ),
+        }
+        existing_config_map = params.get("config_map") or {}
+        if isinstance(existing_config_map, dict):
+            params["config_map"] = {
+                **existing_config_map,
+                **{
+                    key: str(value)
+                    for key, value in thresholds.items()
+                    if value is not None
+                },
+            }
+    return JobSubmission(**{**params, "recompute": recompute})
 
 
 def _credentials_from_env() -> AccountCredentials:

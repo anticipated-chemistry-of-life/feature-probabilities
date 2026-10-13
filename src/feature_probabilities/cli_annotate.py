@@ -73,7 +73,7 @@ from typing import TYPE_CHECKING
 import click
 import pandas as pd
 import PySirius
-from PySirius import DataQuality, JobSubmission, LcmsSubmissionParameters
+from PySirius import DataQuality, LcmsSubmissionParameters
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -114,6 +114,7 @@ from feature_probabilities.sirius import (
     SiriusStartupError,
     SiriusVersionMismatchError,
     SiriusVersionUnavailableError,
+    job_submission_from_config,
     require_matching_sirius_version,
 )
 
@@ -395,8 +396,8 @@ def annotate_batch(
     metadata_df = load_metadata_csv(metadata_csv)
 
     import_params = LcmsSubmissionParameters(**config.sirius.import_params)
-    analysis_params = JobSubmission(
-        **{**config.sirius.analysis_params, "recompute": force}
+    analysis_params = job_submission_from_config(
+        config.sirius.analysis_params, recompute=force
     )
 
     files_processed = 0

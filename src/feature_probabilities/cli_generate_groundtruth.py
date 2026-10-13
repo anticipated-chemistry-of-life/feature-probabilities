@@ -88,6 +88,7 @@ from feature_probabilities.sirius import (
     SiriusStartupError,
     SiriusVersionMismatchError,
     SiriusVersionUnavailableError,
+    job_submission_from_config,
     require_matching_sirius_version,
 )
 
@@ -186,7 +187,7 @@ def _analysis_params(
     formula_id_params = dict(params.get("formula_id_params") or {})
     formula_id_params["profile"] = profile.value
     params["formula_id_params"] = formula_id_params
-    return JobSubmission(**{**params, "recompute": force})
+    return job_submission_from_config(params, recompute=force)
 
 
 def _true_inchikey_by_identifier(spectra: Sequence[Spectrum]) -> dict[str, str]:
