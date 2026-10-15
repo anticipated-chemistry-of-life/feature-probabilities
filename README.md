@@ -32,6 +32,16 @@ Set them either by:
 
 Variables already exported in your shell take precedence over `.env` values.
 
+## Stalled SIRIUS jobs
+
+SIRIUS 6.5.4 can deadlock its job pool on lipid-heavy input, leaving a job
+stuck forever at 0% CPU. When an analysis job's progress stands still for
+20 minutes (`JOB_STALL_TIMEOUT_SECONDS` in `sirius.py`), the SIRIUS process
+is killed and the job fails with `SiriusJobStalledError`.
+`generate-groundtruth` records the chunk as failed and continues with a
+fresh SIRIUS; `annotate` does the same per mzML file. Rerunning retries only
+the failed chunks or files.
+
 ## Smoke test
 
 `--smoke-test` runs the whole pipeline on a small, isolated input so a change

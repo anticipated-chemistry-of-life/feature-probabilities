@@ -27,6 +27,10 @@ structure) plus issue #21's remaining batch-control surface:
   chunk that needs it starts a fresh instance (`Sirius.shutdown`). SIRIUS
   6.5.4 retains ~0.9 GB of heap per chunk that only a process exit frees,
   so one long-lived instance grows by hundreds of GB over the full dataset.
+- A chunk whose SIRIUS job makes no progress for
+  `sirius.JOB_STALL_TIMEOUT_SECONDS` (SIRIUS 6.5.4's job-pool deadlock)
+  has its SIRIUS killed and is recorded as a failed chunk; the run moves on
+  with a fresh instance instead of waiting forever.
 - ``--smoke-test`` deletes and recreates the config's ``[smoke_test]``
   database, then processes only the first ``spectra_per_instrument_type``
   spectra of every instrument type (TSV order), so the whole pipeline can
