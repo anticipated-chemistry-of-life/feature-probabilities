@@ -40,7 +40,7 @@ from feature_probabilities.groundtruth import (
 )
 from feature_probabilities.kde import EmptyStratumError, fit_stratified_kdes
 from feature_probabilities.schema import (
-    SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
+    SOURCE_KIND_GROUND_TRUTH_MSNLIB,
     Annotation,
     Feature,
     KdeModel,
@@ -80,7 +80,7 @@ class FitKdeSummary:
 def _ground_truth_rows(session: Session) -> list[GroundTruthAnnotationRow]:
     """Every ground-truth-run feature-structure-candidate pair, joined and flattened.
 
-    Restricted to `sirius_runs.source_kind == 'ground_truth_massspecgym'` rows
+    Restricted to `sirius_runs.source_kind == 'ground_truth_msnlib'` rows
     whose `features.true_inchikey` was actually resolved, so a field-run
     Feature never contributes to the fit. Each row carries its SIRIUS run's
     Ionization mode, which selects the KDE it is fitted into.
@@ -91,7 +91,7 @@ def _ground_truth_rows(session: Session) -> list[GroundTruthAnnotationRow]:
         .join(Annotation, Annotation.feature_id == Feature.feature_id)
         .join(Molecule, Annotation.molecule_id == Molecule.molecule_id)
         .where(Feature.true_inchikey.is_not(None))
-        .where(SiriusRun.source_kind == SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM)
+        .where(SiriusRun.source_kind == SOURCE_KIND_GROUND_TRUTH_MSNLIB)
     )
     return [
         GroundTruthAnnotationRow(

@@ -13,10 +13,14 @@ db_path = "db/database.duckdb"
 # upgrading the pipeline to a newer SIRIUS release.
 required_sirius_version = "6.5.4"
 
-# Pinned MassSpecGym v1.5 HuggingFace dataset revision (commit SHA) that
-# generate-groundtruth fetches by default. See issue #13 for how this is
-# resolved and kept current.
-massspecgym_revision = "d2e86d0c3bd905a6d578c0dd6053ed2bd41f9c2a"
+# Ground truth set (GLOSSARY.md): the revision (commit SHA) of the
+# HuggingFace dataset salutmoic/msnlib-ms2-parquet whose msnlib_ms2.parquet
+# generate-groundtruth fetches. MSnLib covers both Ionization modes; its
+# ALL_ENERGIES spectra are kept, minus ambiguous-identity and
+# undetectable-adduct ones (ADR 0002). Pinned so a regeneration is
+# reproducible when the dataset's main branch moves; --ground-truth-revision
+# overrides it for one run.
+ground_truth_revision = "d3bc66eec151ca3efb6d2a3ea055c22f167f0ca9"
 
 # Default pickle path fit-kde writes its calibration artifact to: one KDE
 # per Ionization mode (positive, negative). Overridable per-run via --output.
@@ -30,8 +34,9 @@ kde_output_path = "models/kde_model.pkl"
 [smoke_test]
 db_path = "db/smoke_test/database.duckdb"
 kde_output_path = "models/smoke_test/kde_model.pkl"
-# First N spectra of each instrument type (Orbitrap, QTOF), in TSV order.
-spectra_per_instrument_type = 500
+# First N spectra of each Ionization mode (positive, negative) of the Ground
+# truth set, after filtering, in parquet order.
+spectra_per_ionization_mode = 500
 mzml_dir = "data/smoke_test"
 metadata_csv = "data/smoke_test/metadata.tsv"
 ionization_mode = "positive"
@@ -39,7 +44,7 @@ instrument_type = "Orbitrap"
 export_path = "db/smoke_test/feature_probabilities.csv"
 
 [sirius]
-# Top-k (CONTEXT.md): how many best-ranked structure candidates per Feature
+# Top-k (GLOSSARY.md): how many best-ranked structure candidates per Feature
 # every SIRIUS run -- ground truth and field alike -- retains; lower-ranked
 # candidates never become Annotations. Part of each run's caching key, so
 # changing it reruns SIRIUS for every input. See
@@ -58,10 +63,8 @@ top_k = 200
 # not an analysis parameter, and `checksums.analysis_params_checksum` excludes
 # it so forcing a rerun cannot fork the cache.
 #
-# Adduct settings are SIRIUS's defaults verbatim, negative-mode entries
-# included, even though the pinned MassSpecGym revision is 100% positive-mode:
-# `annotate` shares this section for field mzML runs, whose polarity is not
-# known in advance.
+# Adduct settings are SIRIUS's defaults verbatim, covering both Ionization
+# modes: ground truth and field runs alike share this section, in both modes.
 fallback_adducts = ["[M - H]-", "[M + K]+", "[M + H]+", "[M + Na]+"]
 enforced_adducts = []
 detectable_adducts = [

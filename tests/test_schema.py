@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from feature_probabilities.schema import (
     SOURCE_KIND_FIELD_MZML,
-    SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
+    SOURCE_KIND_GROUND_TRUTH_MSNLIB,
     Annotation,
     Base,
     CalibrationScore,
@@ -249,7 +249,7 @@ def test_sirius_run_extract_id_accepts_null_for_ground_truth_runs() -> None:
     with Session(engine) as session:
         run = SiriusRun(
             extract_id=None,
-            source_kind=SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
+            source_kind=SOURCE_KIND_GROUND_TRUTH_MSNLIB,
             input_file_checksum="a" * 64,
             import_params_checksum=None,
             analysis_params_checksum="c" * 64,

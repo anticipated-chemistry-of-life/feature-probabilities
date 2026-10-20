@@ -6,15 +6,16 @@ is the one exception: it drives the production code path
 (`cli_generate_groundtruth.main` -> `generate_groundtruth` ->
 `run_cache.get_or_create_run` -> `sirius.Sirius`) against the SIRIUS that is
 actually installed on the developer's machine, using a single real
-MassSpecGym v1.5 spectrum, and is skipped entirely when SIRIUS or its
+negative-mode MSnLib spectrum, and is skipped entirely when SIRIUS or its
 account credentials aren't available (`_sirius_available`).
 
-It covers exactly what a fake cannot: that SIRIUS accepts the MGF chunk
-`massspecgym.write_sirius_chunks` writes, creates a project-space at the
-path `generate_groundtruth` hands it, accepts the `JobSubmission` built from
+It covers exactly what a fake cannot: that SIRIUS imports the MGF chunk
+`msnlib.write_sirius_chunks` writes as a negative ion (`CHARGE=1-`) and
+detects a negative adduct for it, creates a project-space at the path
+`generate_groundtruth` hands it, accepts the `JobSubmission` built from
 `[sirius.analysis_params]`, and returns features whose
-`external_feature_id` still carries the MassSpecGym identifier the
-ground-truth `true_inchikey` mapping is keyed on.
+`external_feature_id` still carries the MSnLib identifier the ground-truth
+`true_inchikey` mapping is keyed on.
 
 Two SIRIUS-6.3.3 facts this test pins down, both of which produced opaque
 failures before it existed:
@@ -46,7 +47,6 @@ from sqlalchemy.orm import Session
 from feature_probabilities import cli_generate_groundtruth
 from feature_probabilities.cli_generate_groundtruth import main
 from feature_probabilities.schema import (
-    SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
     Annotation,
     Feature,
     SiriusRun,
@@ -59,14 +59,15 @@ if TYPE_CHECKING:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: One row copied verbatim out of MassSpecGym v1.5 at the revision pinned in
-#: `config.toml` (`massspecgym.PINNED_MASSSPECGYM_REVISION`): a QTOF spectrum
-#: of a `[M+H]+` precursor with 92 peaks. Checked in so the test needs
-#: neither the 261 MB dataset download nor network access to HuggingFace.
-QTOF_FIXTURE = Path(__file__).parent / "fixtures" / "massspecgym_qtof_single.tsv"
-QTOF_IDENTIFIER = "MassSpecGymID0000755"
-QTOF_INCHIKEY = "CBGDIJWINPWWJW"
-QTOF_PRECURSOR_MZ = 251.0913
+#: One row copied verbatim (every column) out of MSnLib at the revision
+#: pinned in `config.toml`'s `ground_truth_revision`: the `ALL_ENERGIES`
+#: Orbitrap spectrum of caffeic acid's `[M-H]-` precursor, 26 peaks. Checked
+#: in so the test needs neither the dataset download nor network access to
+#: HuggingFace.
+NEGATIVE_FIXTURE = Path(__file__).parent / "fixtures" / "msnlib_negative_single.parquet"
+NEGATIVE_IDENTIFIER = "MSnLibID0154203"
+NEGATIVE_INCHIKEY_FIRST_BLOCK = "QAIPRVGONGVQAS"
+NEGATIVE_PRECURSOR_MZ = 179.03498
 
 #: The checked-in config is what this test drives -- via `--config` with only
 #: `--db` overridden -- so it verifies the parameters an operator actually
@@ -149,7 +150,7 @@ def _open_project_ids(sirius: Sirius) -> set[str]:
     return {project.project_id for project in sirius._api.projects().get_projects()}
 
 
-def test_single_qtof_massspecgym_spectrum_runs_through_real_sirius(
+def test_single_negative_msnlib_spectrum_runs_through_real_sirius(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Also pins the real wrapper's Top-k read-back (ADR 0001).
@@ -161,8 +162,8 @@ def test_single_qtof_massspecgym_spectrum_runs_through_real_sirius(
     db_path = tmp_path / "groundtruth.duckdb"
     monkeypatch.setattr(
         cli_generate_groundtruth,
-        "fetch_massspecgym_tsv",
-        lambda _revision: QTOF_FIXTURE,
+        "fetch_msnlib_parquet",
+        lambda _revision: NEGATIVE_FIXTURE,
     )
     result = CliRunner().invoke(
         main,
@@ -171,8 +172,8 @@ def test_single_qtof_massspecgym_spectrum_runs_through_real_sirius(
             str(_repo_config_with_top_k(tmp_path, TEST_TOP_K)),
             "--db",
             str(db_path),
-            "--instrument-type",
-            "QTOF",
+            "--ionization-mode",
+            "negative",
         ],
     )
 
@@ -183,25 +184,30 @@ def test_single_qtof_massspecgym_spectrum_runs_through_real_sirius(
         runs = session.scalars(select(SiriusRun)).all()
         assert len(runs) == 1
         run = runs[0]
-        assert run.instrument_type == "QTOF"
-        assert run.source_kind == SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM
+        assert (run.ionization_mode, run.instrument_type) == ("negative", "Orbitrap")
+        assert run.source_kind == "ground_truth_msnlib"
         assert run.extract_id is None
-        assert run.input_file_path.endswith("qtof_0.mgf")
-        assert run.ionization_mode == "positive"
+        assert run.input_file_path.endswith("orbitrap_negative_0.mgf")
 
         features = session.scalars(select(Feature)).all()
         assert len(features) == 1
         feature = features[0]
         assert feature.run_id == run.run_id
-        assert feature.external_feature_id == QTOF_IDENTIFIER
-        assert feature.ion_mass == pytest.approx(QTOF_PRECURSOR_MZ, abs=0.01)
-        assert feature.true_inchikey == QTOF_INCHIKEY
+        assert feature.external_feature_id == NEGATIVE_IDENTIFIER
+        # SIRIUS read the chunk's `CHARGE=1-`: the imported ion is negative.
+        assert feature.charge == -1
+        assert feature.ion_mass == pytest.approx(NEGATIVE_PRECURSOR_MZ, abs=0.01)
+        assert feature.true_inchikey == NEGATIVE_INCHIKEY_FIRST_BLOCK
 
         annotations = session.scalars(select(Annotation)).all()
         assert annotations, "structure database search returned no candidates"
         assert {annotation.feature_id for annotation in annotations} == {
             feature.feature_id
         }
+        detected_adducts = {annotation.adduct for annotation in annotations}
+        assert all(adduct.endswith("-") for adduct in detected_adducts), (
+            detected_adducts
+        )
         ranked = sorted(
             (annotation.rank, annotation.csi_score) for annotation in annotations
         )
@@ -232,14 +238,14 @@ def test_close_project_releases_the_project_from_the_sirius_instance(
     assert project_id not in _open_project_ids(sirius)
 
 
-def test_rerunning_the_same_qtof_spectrum_hits_the_cache_instead_of_sirius(
+def test_rerunning_the_same_negative_spectrum_hits_the_cache_instead_of_sirius(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "groundtruth.duckdb"
     monkeypatch.setattr(
         cli_generate_groundtruth,
-        "fetch_massspecgym_tsv",
-        lambda _revision: QTOF_FIXTURE,
+        "fetch_msnlib_parquet",
+        lambda _revision: NEGATIVE_FIXTURE,
     )
     runner = CliRunner()
     args = [
@@ -247,8 +253,8 @@ def test_rerunning_the_same_qtof_spectrum_hits_the_cache_instead_of_sirius(
         str(REPO_CONFIG),
         "--db",
         str(db_path),
-        "--instrument-type",
-        "QTOF",
+        "--ionization-mode",
+        "negative",
     ]
 
     first = runner.invoke(main, args)

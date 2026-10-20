@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 CONFIG_TOML = """
 db_path = "{db_path}"
 required_sirius_version = "6.0.0"
-massspecgym_revision = "abc123"
+ground_truth_revision = "abc123"
 
 [sirius]
 top_k = 200
@@ -251,7 +251,7 @@ def test_features_are_scored_with_the_kde_of_the_runs_ionization_mode(
 @pytest.mark.parametrize(
     "stale_keys",
     [("Orbitrap", "QTOF", "__global__"), ("positive",)],
-    ids=["instrument-keyed", "positive-only"],
+    ids=["instrument-keyed", "missing-negative"],
 )
 def test_a_kde_artifact_lacking_an_ionization_mode_fails_before_any_sirius_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale_keys: tuple[str, ...]
@@ -854,7 +854,7 @@ SMOKE_TEST_TOML = """
 [smoke_test]
 db_path = "{smoke_db_path}"
 kde_output_path = "unused-smoke-model.pkl"
-spectra_per_instrument_type = 2
+spectra_per_ionization_mode = 2
 mzml_dir = "{mzml_dir}"
 metadata_csv = "{metadata_csv}"
 ionization_mode = "negative"

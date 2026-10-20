@@ -9,7 +9,7 @@ from feature_probabilities.config import Config, ConfigError, load_config
 SAMPLE_TOML = """
 db_path = "db/database.duckdb"
 required_sirius_version = "6.0.0"
-massspecgym_revision = "abc123def456"
+ground_truth_revision = "abc123def456"
 
 [sirius]
 top_k = 200
@@ -39,7 +39,7 @@ def test_loading_sample_config_exposes_top_level_and_nested_sirius_sections(
     assert isinstance(config, Config)
     assert config.db_path == "db/database.duckdb"
     assert config.required_sirius_version == "6.0.0"
-    assert config.massspecgym_revision == "abc123def456"
+    assert config.ground_truth_revision == "abc123def456"
     assert config.sirius.analysis_params == {"profile": "orbitrap", "ppm_max": 10.0}
     assert config.sirius.import_params == {"allow_ms1_only": False}
     assert config.sirius.top_k == 200
@@ -60,7 +60,7 @@ def test_override_wins_over_file_value_but_unset_override_leaves_file_value(
 
     assert config.db_path == "/override/path.duckdb"
     assert config.required_sirius_version == "6.0.0"
-    assert config.massspecgym_revision == "abc123def456"
+    assert config.ground_truth_revision == "abc123def456"
 
 
 def test_override_can_replace_a_nested_sirius_param_key(tmp_path: Path) -> None:
@@ -96,6 +96,19 @@ def test_missing_required_key_raises_config_error(tmp_path: Path) -> None:
         load_config(config_path)
 
 
+def test_missing_ground_truth_revision_raises_config_error_naming_it(
+    tmp_path: Path,
+) -> None:
+    """The Ground truth set's revision is pinned in the config: no silent default."""
+    config_path = write_config(
+        tmp_path,
+        text=SAMPLE_TOML.replace('ground_truth_revision = "abc123def456"\n', ""),
+    )
+
+    with pytest.raises(ConfigError, match="ground_truth_revision"):
+        load_config(config_path)
+
+
 def test_missing_top_k_raises_config_error_naming_it(tmp_path: Path) -> None:
     """Top-k is part of every SIRIUS run's identity: no silent default."""
     config_path = write_config(tmp_path, text=SAMPLE_TOML.replace("top_k = 200\n", ""))
@@ -113,6 +126,31 @@ def test_top_k_that_is_not_a_positive_integer_raises_config_error(
     )
 
     with pytest.raises(ConfigError, match="top_k"):
+        load_config(config_path)
+
+
+SMOKE_TEST_TOML = """
+[smoke_test]
+db_path = "db/smoke_test/database.duckdb"
+kde_output_path = "models/smoke_test/kde_model.pkl"
+spectra_per_ionization_mode = {value}
+mzml_dir = "data/smoke_test"
+metadata_csv = "data/smoke_test/metadata.tsv"
+ionization_mode = "positive"
+instrument_type = "Orbitrap"
+export_path = "db/smoke_test/feature_probabilities.csv"
+"""
+
+
+@pytest.mark.parametrize("value", ["0", "-5", '"500"', "2.5", "true"])
+def test_spectra_per_ionization_mode_that_is_not_a_positive_integer_raises(
+    tmp_path: Path, value: str
+) -> None:
+    config_path = write_config(
+        tmp_path, text=SAMPLE_TOML + SMOKE_TEST_TOML.format(value=value)
+    )
+
+    with pytest.raises(ConfigError, match="spectra_per_ionization_mode"):
         load_config(config_path)
 
 

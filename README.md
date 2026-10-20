@@ -42,6 +42,34 @@ is killed and the job fails with `SiriusJobStalledError`.
 fresh SIRIUS; `annotate` does the same per mzML file. Rerunning retries only
 the failed chunks or files.
 
+## Ground truth
+
+`generate-groundtruth` builds the Ground truth set from MSnLib
+(`msnlib_ms2.parquet` of the HuggingFace dataset
+`salutmoic/msnlib-ms2-parquet`), in both Ionization modes. It fetches the
+revision pinned as `ground_truth_revision` in `config.toml` through the
+HuggingFace hub cache; `--ground-truth-revision` overrides it for one run.
+
+Only `ALL_ENERGIES` spectra are kept. Spectra MSnLib also matched to other
+library compounds are dropped, as are spectra whose adduct SIRIUS cannot
+detect (`[M]+`, `[M-H2O]+`, `[M]-`). The run summary reports how many
+spectra each filter dropped. A missing column, a blank or malformed value,
+an `ionmode` that is not exactly `positive` or `negative` or disagrees with
+the sign of `charge`, or an unknown instrument fails the run before any
+SIRIUS work, naming the spectrum.
+
+Spectra are chunked by (Ionization mode, Instrument type), e.g.
+`orbitrap_negative_0.mgf`, at most 2,000 spectra per chunk. Each chunk is
+written with `CHARGE=1+` or `CHARGE=1-`, analysed under its Instrument
+type's SIRIUS profile, and recorded as a ground truth run (source kind
+`ground_truth_msnlib`) with its Ionization mode and Instrument type.
+`--ionization-mode {positive,negative,all}` restricts which chunks run.
+SIRIUS is never shown the answer: no adduct, structure, formula, parent
+mass or collision energy reaches the MGF.
+
+A database created before MSnLib ground truth is not migrated: delete it
+and rerun `generate-groundtruth` and `annotate` (ADR 0002).
+
 ## Calibration
 
 `fit-kde` fits one KDE per Ionization mode, `positive` and `negative`. Each
@@ -64,7 +92,7 @@ can be checked end to end in minutes. Every setting lives in `config.toml`'s
 `[smoke_test]` section:
 
 ```
-generate-groundtruth --smoke-test   # resets the smoke DB; first N spectra per instrument type
+generate-groundtruth --smoke-test   # resets the smoke DB; first N spectra per Ionization mode
 fit-kde --smoke-test                # fits from the smoke DB
 annotate --smoke-test               # annotates data/smoke_test/ into the smoke DB and exports
 ```

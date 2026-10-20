@@ -14,7 +14,7 @@ before annotations, features/annotations before calibration_scores):
 -> ``annotations`` -> ``kde_models`` -> ``calibration_scores``
 
 See the DuckDB schema decision (issue #4) and its checksum-column follow-up
-(issue #5) for the full column-level derivation, and ``CONTEXT.md`` for the
+(issue #5) for the full column-level derivation, and ``GLOSSARY.md`` for the
 domain vocabulary (Feature, Structure candidate, Molecule, Annotation,
 Extract, SIRIUS run, Calibration score) these tables encode.
 
@@ -38,11 +38,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 #: Closed set of `sirius_runs.source_kind` values, per the DuckDB schema
 #: decision: a ground-truth run (no `extract_id`) or a field run (has one).
 SOURCE_KIND_FIELD_MZML = "field_mzml"
-SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM = "ground_truth_massspecgym"
+SOURCE_KIND_GROUND_TRUTH_MSNLIB = "ground_truth_msnlib"
 
 #: First-block (14-character, skeleton-level) InChIKey length, as returned
-#: unmodified by both SIRIUS's `StructureCandidateFormula.inchiKey` and
-#: MassSpecGym's `inchikey` column -- see CONTEXT.md's Molecule entry.
+#: by SIRIUS's `StructureCandidateFormula.inchiKey`. MSnLib's full
+#: `inchikey` is cut to this first block before it is stored -- see
+#: GLOSSARY.md's Molecule entry.
 INCHIKEY_FIRST_BLOCK_LENGTH = 14
 
 
@@ -85,7 +86,7 @@ class SiriusRun(Base):
 
     A field run has ``extract_id`` set and ``source_kind ==
     SOURCE_KIND_FIELD_MZML``; a ground-truth run has ``extract_id`` NULL and
-    ``source_kind == SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM``. Reprocessing the
+    ``source_kind == SOURCE_KIND_GROUND_TRUTH_MSNLIB``. Reprocessing the
     same input under different parameters inserts a new, coexisting row --
     this table is never updated in place.
     """
@@ -94,7 +95,7 @@ class SiriusRun(Base):
     __table_args__ = (
         sa.CheckConstraint(
             f"source_kind IN ('{SOURCE_KIND_FIELD_MZML}', "
-            f"'{SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM}')",
+            f"'{SOURCE_KIND_GROUND_TRUTH_MSNLIB}')",
             name="ck_sirius_runs_source_kind",
         ),
     )
@@ -121,7 +122,7 @@ class Feature(Base):
     """One MS2 spectrum treated as an analytical unit by SIRIUS.
 
     ``true_inchikey`` is populated only for ground-truth-run features (from
-    MassSpecGym's known structure); it is NULL for field-run features, where
+    MSnLib's known structure); it is NULL for field-run features, where
     the true identity is unknown.
     """
 

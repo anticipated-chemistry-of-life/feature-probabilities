@@ -22,7 +22,7 @@ from feature_probabilities.calibrate import load_kdes
 from feature_probabilities.cli_fit_kde import main
 from feature_probabilities.schema import (
     SOURCE_KIND_FIELD_MZML,
-    SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
+    SOURCE_KIND_GROUND_TRUTH_MSNLIB,
     Annotation,
     Feature,
     KdeModel,
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 CONFIG_TOML = """
 db_path = "{db_path}"
 required_sirius_version = "6.0.0"
-massspecgym_revision = "abc123"
+ground_truth_revision = "abc123"
 kde_output_path = "{kde_output_path}"
 
 [sirius]
@@ -70,7 +70,7 @@ def _insert_run(
     ionization_mode: str,
     run_suffix: str,
     instrument_type: str = "Orbitrap",
-    source_kind: str = SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
+    source_kind: str = SOURCE_KIND_GROUND_TRUTH_MSNLIB,
 ) -> SiriusRun:
     run = SiriusRun(
         extract_id=None,
@@ -415,7 +415,7 @@ SMOKE_TEST_TOML = """
 [smoke_test]
 db_path = "{smoke_db_path}"
 kde_output_path = "{smoke_kde_output_path}"
-spectra_per_instrument_type = 2
+spectra_per_ionization_mode = 2
 mzml_dir = "unused-smoke-mzml-dir"
 metadata_csv = "unused-smoke-metadata.csv"
 ionization_mode = "positive"

@@ -11,7 +11,7 @@ overriding individual keys. Precedence, highest to lowest:
    for ``kde_output_path``, and empty ``{}`` dicts for the
    ``[sirius.analysis_params]``/``[sirius.import_params]`` tables, when a
    config file omits them; ``db_path``, ``required_sirius_version``,
-   ``massspecgym_revision``, and ``[sirius] top_k`` have no such default and
+   ``ground_truth_revision``, and ``[sirius] top_k`` have no such default and
    are required).
 
 The optional ``[smoke_test]`` section configures every CLI's ``--smoke-test``
@@ -35,7 +35,7 @@ type TOMLTable = dict[str, TOMLValue]
 
 DEFAULT_CONFIG_PATH = Path("config.toml")
 
-_REQUIRED_KEYS = ("db_path", "required_sirius_version", "massspecgym_revision")
+_REQUIRED_KEYS = ("db_path", "required_sirius_version", "ground_truth_revision")
 
 _SMOKE_TEST_STRING_KEYS = (
     "db_path",
@@ -64,7 +64,7 @@ class ConfigError(Exception):
 class SiriusConfig:
     """The ``[sirius]`` section: its ``top_k`` plus the nested ``[sirius.*]`` parameter tables.
 
-    ``top_k`` is the Top-k (CONTEXT.md): how many best-ranked structure
+    ``top_k`` is the Top-k (GLOSSARY.md): how many best-ranked structure
     candidates per Feature a SIRIUS run retains. Part of every SIRIUS run's
     identity, so it is required with no default (ADR 0001).
     """
@@ -79,14 +79,14 @@ class SmokeTestConfig:
     """The ``[smoke_test]`` section: a small, isolated end-to-end pipeline run.
 
     ``db_path``/``kde_output_path`` replace the top-level ones (see
-    :func:`for_smoke_test`); ``spectra_per_instrument_type`` caps
-    ``generate-groundtruth``'s MassSpecGym input; the rest are ``annotate``'s
+    :func:`for_smoke_test`); ``spectra_per_ionization_mode`` caps
+    ``generate-groundtruth``'s Ground truth set; the rest are ``annotate``'s
     defaults for its otherwise-required inputs and its export.
     """
 
     db_path: str
     kde_output_path: str
-    spectra_per_instrument_type: int
+    spectra_per_ionization_mode: int
     mzml_dir: str
     metadata_csv: str
     ionization_mode: str
@@ -100,7 +100,7 @@ class Config:
 
     db_path: str
     required_sirius_version: str
-    massspecgym_revision: str
+    ground_truth_revision: str
     kde_output_path: str
     sirius: SiriusConfig
     smoke_test: SmokeTestConfig | None = None
@@ -157,7 +157,7 @@ def load_config(
     return Config(
         db_path=str(merged["db_path"]),
         required_sirius_version=str(merged["required_sirius_version"]),
-        massspecgym_revision=str(merged["massspecgym_revision"]),
+        ground_truth_revision=str(merged["ground_truth_revision"]),
         kde_output_path=str(merged["kde_output_path"]),
         sirius=SiriusConfig(
             top_k=_top_k(sirius_data.get("top_k"), path),
@@ -194,7 +194,7 @@ def _smoke_test_config(data: TOMLValue, path: Path) -> SmokeTestConfig | None:
 
     missing = [
         key
-        for key in (*_SMOKE_TEST_STRING_KEYS, "spectra_per_instrument_type")
+        for key in (*_SMOKE_TEST_STRING_KEYS, "spectra_per_ionization_mode")
         if data.get(key) in (None, "")
     ]
     if missing:
@@ -203,15 +203,15 @@ def _smoke_test_config(data: TOMLValue, path: Path) -> SmokeTestConfig | None:
             f"{', '.join(missing)}"
         )
 
-    spectra_per_instrument_type = _positive_int(
-        data["spectra_per_instrument_type"],
-        "[smoke_test] spectra_per_instrument_type",
+    spectra_per_ionization_mode = _positive_int(
+        data["spectra_per_ionization_mode"],
+        "[smoke_test] spectra_per_ionization_mode",
         path,
     )
 
     return SmokeTestConfig(
         **{key: str(data[key]) for key in _SMOKE_TEST_STRING_KEYS},
-        spectra_per_instrument_type=spectra_per_instrument_type,
+        spectra_per_ionization_mode=spectra_per_ionization_mode,
     )
 
 

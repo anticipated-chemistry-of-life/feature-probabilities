@@ -5,7 +5,7 @@
 -- first-block (skeleton-level) InChIKey stored in `molecules`.
 -- `calibration_score` comes from the most recently fitted KDE model; it is
 -- NULL for an annotation that model never scored. Features without any
--- assigned molecule produce no row. Ground-truth (MassSpecGym) runs have no
+-- assigned molecule produce no row. Ground truth (MSnLib) runs have no
 -- extract and are excluded.
 --
 -- Usage:
