@@ -1,24 +1,22 @@
 """Applies a fitted KDE pickle to a batch of already-annotated features.
 
-Issue #24's slice: given a loaded stratified-KDE dict (`fit-kde`'s #22 pickle
-shape, `kde.fit_stratified_kdes`'s output) and an explicit set of
+Issue #24's slice: given a loaded per-Ionization-mode KDE dict (`fit-kde`'s
+#22 pickle shape, `kde.fit_stratified_kdes`'s output) and an explicit set of
 `annotations` already in the DB, computes each annotation's calibration
-score -- `kde[stratum].pdf((ion_mass, csi_score))`, per the KDE calibration
-method decision (issue #7) -- and upserts one `calibration_scores` row per
-`(annotation_id, kde_model_id)`.
+score -- `kdes[ionization_mode].pdf((ion_mass, csi_score))`, per the KDE
+calibration method decision (issue #7, ADR 0002) -- and upserts one
+`calibration_scores` row per `(annotation_id, kde_model_id)`.
 
-Stratum selection: `feature.instrument_type` (via the owning `sirius_runs`
-row) if it has a dedicated trained stratum in the pickle, else
-`kde.GLOBAL_STRATUM` (`"__global__"`) -- the same fallback semantics
-`fit-kde` documents, so a feature from an instrument type neither trained
-stratum covers is scored, never errors.
+KDE selection: the owning `sirius_runs` row's Ionization mode, with no
+fallback. :func:`load_kdes` refuses an artifact lacking either mode (e.g. an
+old instrument-keyed pickle), so every SIRIUS run's mode always has a KDE.
 
 Deliberately does **not** touch the `Sirius` wrapper, and never writes
 `sirius_runs`/`features`/`annotations` -- pure DB read/compute/write against
 `calibration_scores` only, as issue #24 requires. The caller always states
 which annotations to score (there is no "every annotation in the DB"
-default): the whole DB includes ground-truth MassSpecGym annotations, which
-are never meant to receive a calibration score. Selecting *which*
+default): the whole DB includes ground-truth annotations, which are never
+meant to receive a calibration score. Selecting *which*
 pickle/`kde_model_id` to apply (`--kde-model`, defaulting to the most
 recently fitted `kde_models` row) is `annotate`'s remaining CLI surface
 (issue #25), which also relies on this module's upsert semantics to stay
@@ -40,7 +38,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from feature_probabilities.kde import GLOBAL_STRATUM
+from feature_probabilities.kde import IONIZATION_MODES
 from feature_probabilities.schema import (
     Annotation,
     CalibrationScore,
@@ -52,6 +50,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from scipy.stats import gaussian_kde
+
+
+class IncompleteKdeArtifactError(Exception):
+    """Raised when a KDE artifact lacks a KDE for one of `kde.IONIZATION_MODES`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,46 +68,52 @@ class CalibrationSummary:
 class AnnotationScoringTarget:
     """One annotation to score: its id plus the `(ion_mass, csi_score)` pair.
 
-    `instrument_type` comes from the owning `sirius_runs` row and drives
-    stratum selection (`_select_stratum`).
+    `ionization_mode` comes from the owning `sirius_runs` row and selects
+    the KDE that scores it.
     """
 
     annotation_id: int
     ion_mass: float
     csi_score: float
-    instrument_type: str
+    ionization_mode: str
 
 
 def load_kdes(artifact_path: str | Path) -> dict[str, gaussian_kde]:
-    """Unpickle a `fit-kde` artifact back into its stratum-keyed KDE dict.
+    """Unpickle a `fit-kde` artifact back into its Ionization-mode-keyed KDE dict.
 
     Trust boundary: `artifact_path` is always a `kde_models.artifact_path`
     written by this same deployment's `fit-kde` (never untrusted/network
     input) -- see this module's docstring.
+
+    Raises:
+        IncompleteKdeArtifactError: the artifact has no KDE for one of
+            `kde.IONIZATION_MODES`, e.g. it predates per-mode calibration.
     """
     with Path(artifact_path).open("rb") as handle:
-        return pickle.load(handle)
-
-
-def _select_stratum(instrument_type: str, kdes: dict[str, gaussian_kde]) -> str:
-    """`instrument_type` if it has a dedicated trained stratum in `kdes`, else the fallback."""
-    return instrument_type if instrument_type in kdes else GLOBAL_STRATUM
+        kdes = pickle.load(handle)
+    missing_modes = [mode for mode in IONIZATION_MODES if mode not in kdes]
+    if missing_modes:
+        raise IncompleteKdeArtifactError(
+            f"KDE artifact {str(artifact_path)!r} has no KDE for Ionization "
+            f"mode(s) {', '.join(missing_modes)}."
+        )
+    return kdes
 
 
 def _annotation_targets(
     session: Session, annotation_ids: Sequence[int]
 ) -> list[AnnotationScoringTarget]:
-    """Every `annotation_ids` row to score, joined with its feature's ion mass and instrument type.
+    """Every `annotation_ids` row to score, joined with its feature's ion mass and Ionization mode.
 
     Joins `annotations` -> `features` -> `sirius_runs` to pull in the
-    feature's ion mass and owning run's instrument type.
+    feature's ion mass and owning run's Ionization mode.
     """
     stmt = (
         select(
             Annotation.annotation_id,
             Feature.ion_mass,
             Annotation.csi_score,
-            SiriusRun.instrument_type,
+            SiriusRun.ionization_mode,
         )
         .join(Feature, Annotation.feature_id == Feature.feature_id)
         .join(SiriusRun, Feature.run_id == SiriusRun.run_id)
@@ -116,9 +124,9 @@ def _annotation_targets(
             annotation_id=annotation_id,
             ion_mass=ion_mass,
             csi_score=csi_score,
-            instrument_type=instrument_type,
+            ionization_mode=ionization_mode,
         )
-        for annotation_id, ion_mass, csi_score, instrument_type in session.execute(
+        for annotation_id, ion_mass, csi_score, ionization_mode in session.execute(
             stmt
         ).all()
     ]
@@ -133,11 +141,12 @@ def apply_calibration(
 ) -> CalibrationSummary:
     """Score every `annotation_ids` row against `kdes` and persist+commit the result.
 
-    For each targeted annotation, selects its stratum (`_select_stratum`)
-    and computes `kdes[stratum].pdf((ion_mass, csi_score))`, then upserts
-    one `calibration_scores` row keyed `(annotation_id, kde_model_id)`: a
-    fresh pair is inserted, an already-scored pair has its `score` updated
-    in place.
+    For each targeted annotation, computes
+    `kdes[ionization_mode].pdf((ion_mass, csi_score))` with its SIRIUS run's
+    Ionization mode -- there is no fallback KDE -- then upserts one
+    `calibration_scores` row keyed `(annotation_id, kde_model_id)`: a fresh
+    pair is inserted, an already-scored pair has its `score` updated in
+    place.
 
     Running this a second time with a *different* `kde_model_id` for the
     same annotations inserts a second, coexisting set of rows rather than
@@ -149,13 +158,14 @@ def apply_calibration(
     conflict.
 
     Raises:
+        KeyError: `kdes` has no KDE for an annotation's Ionization mode.
         sqlalchemy.exc.IntegrityError: `kde_model_id` doesn't reference an
             existing `kde_models` row.
     """
     targets = _annotation_targets(session, annotation_ids)
     for target in targets:
-        stratum = _select_stratum(target.instrument_type, kdes)
-        score = float(kdes[stratum].pdf((target.ion_mass, target.csi_score))[0])
+        kde = kdes[target.ionization_mode]
+        score = float(kde.pdf((target.ion_mass, target.csi_score))[0])
         existing = session.get(CalibrationScore, (target.annotation_id, kde_model_id))
         if existing is not None:
             existing.score = score

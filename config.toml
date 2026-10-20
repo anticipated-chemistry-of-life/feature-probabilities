@@ -18,8 +18,8 @@ required_sirius_version = "6.5.4"
 # resolved and kept current.
 massspecgym_revision = "d2e86d0c3bd905a6d578c0dd6053ed2bd41f9c2a"
 
-# Default pickle path fit-kde writes its stratified KDE calibration
-# artifact to; overridable per-run via --output. See issue #22.
+# Default pickle path fit-kde writes its calibration artifact to: one KDE
+# per Ionization mode (positive, negative). Overridable per-run via --output.
 kde_output_path = "models/kde_model.pkl"
 
 # `--smoke-test` mode of every CLI: a small, isolated end-to-end run for

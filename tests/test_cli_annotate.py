@@ -20,14 +20,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 from PySirius import AlignedFeature, DataQuality, StructureCandidateFormula
 from scipy.stats import gaussian_kde
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from feature_probabilities.cli_annotate import main
-from feature_probabilities.kde import GLOBAL_STRATUM
 from feature_probabilities.schema import (
     SOURCE_KIND_FIELD_MZML,
     Annotation,
@@ -64,7 +63,7 @@ EX-002,EX-002.mzML,Panthera tigris,9694,Felidae,root
 """
 
 #: (ion_mass, csi_score) points bracketing `_fake_sirius_for`'s default
-#: candidate (151.0, -100.0), so every stratum's KDE can score it.
+#: candidate (151.0, -100.0), so every Ionization mode's KDE can score it.
 _KDE_POINTS = [(150.0, -100.0), (151.0, -99.0), (149.5, -101.0), (152.0, -98.5)]
 
 #: A distinctly different point cloud, so a KDE fit on it disagrees with
@@ -149,18 +148,14 @@ def _open_db(db_path: Path) -> Iterator[Session]:
         engine.dispose()
 
 
-def _kde_dict(points: list[tuple[float, float]]) -> dict[str, gaussian_kde]:
-    fitted = gaussian_kde(np.array(points).T)
-    return {"Orbitrap": fitted, "QTOF": fitted, GLOBAL_STRATUM: fitted}
+def _fitted(points: list[tuple[float, float]]) -> gaussian_kde:
+    return gaussian_kde(np.array(points).T)
 
 
-def _seed_kde_model(
-    db_path: Path,
-    artifact_path: Path,
-    *,
-    points: list[tuple[float, float]] | None = None,
+def _seed_kde_artifact(
+    db_path: Path, artifact_path: Path, kdes: dict[str, gaussian_kde]
 ) -> int:
-    """Pickle a real, fitted KDE dict to `artifact_path` and insert its `kde_models` row.
+    """Pickle `kdes` to `artifact_path` and insert its `kde_models` row.
 
     Creates `db_path` if it doesn't exist yet (mirroring `main`'s own
     idempotent `create_database` call). Returns the new row's
@@ -168,7 +163,7 @@ def _seed_kde_model(
     """
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     with artifact_path.open("wb") as handle:
-        pickle.dump(_kde_dict(points if points is not None else _KDE_POINTS), handle)
+        pickle.dump(kdes, handle)
 
     engine = create_database(str(db_path))
     try:
@@ -181,9 +176,26 @@ def _seed_kde_model(
         engine.dispose()
 
 
+def _seed_kde_model(
+    db_path: Path,
+    artifact_path: Path,
+    *,
+    points: list[tuple[float, float]] | None = None,
+) -> int:
+    """`_seed_kde_artifact` with both Ionization modes' KDEs fitted on `points`."""
+    fitted = _fitted(points if points is not None else _KDE_POINTS)
+    return _seed_kde_artifact(
+        db_path, artifact_path, {"positive": fitted, "negative": fitted}
+    )
+
+
 def _invoke(
-    config_path: Path, mzml_dir: Path, csv_path: Path, *extra_args: str
-) -> object:
+    config_path: Path,
+    mzml_dir: Path,
+    csv_path: Path,
+    *extra_args: str,
+    ionization_mode: str = "positive",
+) -> Result:
     return CliRunner().invoke(
         main,
         [
@@ -194,12 +206,73 @@ def _invoke(
             "--metadata-csv",
             str(csv_path),
             "--ionization-mode",
-            "positive",
+            ionization_mode,
             "--instrument-type",
             "Orbitrap",
             *extra_args,
         ],
     )
+
+
+@pytest.mark.parametrize(
+    ("ionization_mode", "other_mode"),
+    [("positive", "negative"), ("negative", "positive")],
+)
+def test_features_are_scored_with_the_kde_of_the_runs_ionization_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ionization_mode: str,
+    other_mode: str,
+) -> None:
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
+    csv_path = _write_csv(tmp_path)
+    _patch_seams(monkeypatch, fake=_fake_sirius_for())
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    kdes = {"positive": _fitted(_KDE_POINTS), "negative": _fitted(_OTHER_KDE_POINTS)}
+    kde_model_id = _seed_kde_artifact(db_path, tmp_path / "kde.pkl", kdes)
+
+    result = _invoke(config_path, mzml_dir, csv_path, ionization_mode=ionization_mode)
+
+    assert result.exit_code == 0, result.output
+    # `_fake_sirius_for`'s one Feature: ion mass 151.0, CSI:FingerID score -100.
+    point = (151.0, -100.0)
+    with _open_db(db_path) as session:
+        [score] = session.scalars(
+            select(CalibrationScore).where(
+                CalibrationScore.kde_model_id == kde_model_id
+            )
+        ).all()
+    assert score.score == pytest.approx(float(kdes[ionization_mode].pdf(point)[0]))
+    assert score.score != pytest.approx(float(kdes[other_mode].pdf(point)[0]))
+
+
+@pytest.mark.parametrize(
+    "stale_keys",
+    [("Orbitrap", "QTOF", "__global__"), ("positive",)],
+    ids=["instrument-keyed", "positive-only"],
+)
+def test_a_kde_artifact_lacking_an_ionization_mode_fails_before_any_sirius_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale_keys: tuple[str, ...]
+) -> None:
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
+    csv_path = _write_csv(tmp_path)
+    fake = _fake_sirius_for()
+    _patch_seams(monkeypatch, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    fitted = _fitted(_KDE_POINTS)
+    _seed_kde_artifact(db_path, tmp_path / "kde.pkl", dict.fromkeys(stale_keys, fitted))
+
+    result = _invoke(config_path, mzml_dir, csv_path)
+
+    assert result.exit_code != 0
+    assert "fit-kde" in result.output
+    assert fake.create_project_calls == []
+    assert fake.import_spectra_calls == []
+    assert fake.run_calls == []
 
 
 def test_full_run_populates_expected_rows_through_the_fake_wrapper(
@@ -880,6 +953,21 @@ def test_smoke_test_without_a_kde_model_points_at_the_smoke_fit_kde(
 ) -> None:
     _patch_seams(monkeypatch, fake=_fake_sirius_for())
     config_path, *_ = _write_smoke_setup(tmp_path)
+
+    result = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
+
+    assert result.exit_code != 0
+    assert "fit-kde --smoke-test" in result.output
+
+
+def test_smoke_test_with_an_incomplete_kde_artifact_points_at_the_smoke_fit_kde(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_seams(monkeypatch, fake=_fake_sirius_for())
+    config_path, _, smoke_db_path, _ = _write_smoke_setup(tmp_path)
+    _seed_kde_artifact(
+        smoke_db_path, tmp_path / "smoke-kde.pkl", {"positive": _fitted(_KDE_POINTS)}
+    )
 
     result = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])
 

@@ -12,14 +12,18 @@ surface:
 
 - ``--kde-model <path>`` selects the ``kde_models`` row whose
   ``artifact_path`` equals ``<path>``; omitted, it defaults to the most
-  recently fitted row (highest ``kde_model_id``). Every processed file's
-  annotations (both freshly run and cache-hit) are scored against it via
-  ``calibrate.apply_calibration`` (#24) -- re-pointing ``--kde-model`` at a
-  different, already-fitted pickle for an already-processed batch adds a
-  second, coexisting set of ``calibration_scores`` rows without any new
-  SIRIUS calls (a pure cache hit); re-running with the *same* model
-  overwrites those rows in place (`apply_calibration`'s upsert semantics),
-  keeping an unchanged rerun idempotent.
+  recently fitted row (highest ``kde_model_id``). Its artifact is loaded
+  once, before any mzML reaches SIRIUS, and must hold a KDE for both
+  Ionization modes (an older artifact fails, telling the operator to rerun
+  ``fit-kde``). Every processed file's annotations (both freshly run and
+  cache-hit) are scored via ``calibrate.apply_calibration`` (#24) with the
+  KDE for the file's SIRIUS run's Ionization mode -- re-pointing
+  ``--kde-model`` at a different, already-fitted pickle for an
+  already-processed batch adds a second, coexisting set of
+  ``calibration_scores`` rows without any new SIRIUS calls (a pure cache
+  hit); re-running with the *same* model overwrites those rows in place
+  (`apply_calibration`'s upsert semantics), keeping an unchanged rerun
+  idempotent.
 - ``--force`` sets the SIRIUS ``JobSubmission.recompute`` field and passes
   ``force=True`` through to `run_cache.get_or_create_run`, bypassing the
   cache lookup for every file.
@@ -57,10 +61,11 @@ surface:
   ``--db``.
 
 ``ionization_mode``/``instrument_type`` are per-batch CLI flags rather than
-metadata-CSV columns: per ``CONTEXT.md``'s Extract entry, they're
+metadata-CSV columns: per ``GLOSSARY.md``'s Extract entry, they're
 acquisition-specific detail that lives on the SIRIUS run, not the physical
 sample -- the metadata CSV (#17) only ever upserts ``species``/``extracts``
-rows.
+rows. The Ionization mode recorded on a field run selects the KDE that
+scores its Features.
 """
 
 from __future__ import annotations
@@ -77,7 +82,11 @@ from PySirius import DataQuality, LcmsSubmissionParameters
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from feature_probabilities.calibrate import apply_calibration, load_kdes
+from feature_probabilities.calibrate import (
+    IncompleteKdeArtifactError,
+    apply_calibration,
+    load_kdes,
+)
 from feature_probabilities.config import (
     DEFAULT_CONFIG_PATH,
     Config,
@@ -85,6 +94,7 @@ from feature_probabilities.config import (
     for_smoke_test,
     load_config,
 )
+from feature_probabilities.kde import IONIZATION_MODES
 from feature_probabilities.metadata import (
     MetadataError,
     find_metadata_row_for_mzml,
@@ -162,11 +172,12 @@ class AnnotateError(Exception):
 
 
 class NoKdeModelError(Exception):
-    """Raised when `--kde-model` (or its default) can't be resolved.
+    """Raised when `--kde-model` (or its default) can't be resolved to a usable model.
 
-    Either `--kde-model` names a path with no matching `kde_models` row, or
-    it was omitted and the table has no rows at all -- `fit-kde` hasn't run
-    yet.
+    Either `--kde-model` names a path with no matching `kde_models` row, it
+    was omitted and the table has no rows at all -- `fit-kde` hasn't run
+    yet -- or the resolved row's artifact lacks a KDE for an Ionization mode,
+    e.g. it was fitted before calibration split by Ionization mode.
     """
 
 
@@ -348,16 +359,17 @@ def annotate_batch(
 ) -> AnnotateSummary:
     """Upsert `metadata_csv` and run every `mzml_dir` file through cache-aware SIRIUS.
 
-    Resolves the `kde_models` row to apply (`_resolve_kde_model`) once,
-    up front. For each mzML file (processed in sorted-by-name order): looks
-    up its metadata row by the table's `filename` column
-    (`find_metadata_row_for_mzml`), upserts the corresponding
-    `species`/`extracts` rows (`upsert_metadata_row`), runs it through
-    `run_cache.get_or_create_run` with `source_kind='field_mzml'`,
-    `force=force`, the just-upserted row's `extract_id`, and
-    `config.sirius.import_params`/`analysis_params` (with
+    Resolves the `kde_models` row to apply (`_resolve_kde_model`) and loads
+    its per-Ionization-mode KDEs once, up front. For each mzML file
+    (processed in sorted-by-name order): looks up its metadata row by the
+    table's `filename` column (`find_metadata_row_for_mzml`), upserts the
+    corresponding `species`/`extracts` rows (`upsert_metadata_row`), runs it
+    through `run_cache.get_or_create_run` with `source_kind='field_mzml'`,
+    `force=force`, the just-upserted row's `extract_id`, `ionization_mode`,
+    and `config.sirius.import_params`/`analysis_params` (with
     `JobSubmission.recompute` also set from `force`), then scores every one
-    of its annotations (`apply_calibration`) against the resolved model.
+    of its annotations (`apply_calibration`) with the resolved model's KDE
+    for `ionization_mode`.
 
     `commit`s `session` after every file -- on success, so an earlier
     file's work survives a later file's failure; on failure, `rollback`s
@@ -365,8 +377,8 @@ def annotate_batch(
     rather than aborting the whole batch. Either way `sirius` is shut down
     after the file, freeing the heap SIRIUS never releases on its own. Only
     errors raised *before* any file is processed (SIRIUS version mismatch,
-    an unresolvable `--kde-model`, a missing metadata row) or by a shutdown
-    propagate out of this function.
+    an unresolvable `--kde-model` or incomplete KDE artifact, a missing
+    metadata row) or by a shutdown propagate out of this function.
     If `export_path` is given, writes the feature-probability table for
     every successfully processed file once the batch finishes.
     `fit_kde_command` is the command a missing-KDE error tells the operator
@@ -376,7 +388,7 @@ def annotate_batch(
         SiriusVersionMismatchError: the installed SIRIUS version doesn't
             match `config.required_sirius_version`.
         NoKdeModelError: `kde_model_path` doesn't resolve to a `kde_models`
-            row.
+            row, or its artifact lacks a KDE for an Ionization mode.
         AnnotateError: `mzml_dir` doesn't exist or isn't a directory, or
             `export_path`'s extension is unsupported.
         MetadataError: `metadata_csv` is malformed, or an mzML file has no
@@ -387,7 +399,12 @@ def annotate_batch(
     kde_model = _resolve_kde_model(
         session, kde_model_path, fit_kde_command=fit_kde_command
     )
-    kdes = load_kdes(kde_model.artifact_path)
+    try:
+        kdes = load_kdes(kde_model.artifact_path)
+    except IncompleteKdeArtifactError as exc:
+        raise NoKdeModelError(
+            f"{exc} Rerun {fit_kde_command} to fit one KDE per Ionization mode."
+        ) from exc
     export_writer_name = (
         _export_writer_name(export_path) if export_path is not None else None
     )
@@ -556,10 +573,11 @@ def _required_inputs(
 @click.option(
     "--ionization-mode",
     "ionization_mode",
-    type=click.Choice(["positive", "negative"]),
+    type=click.Choice(IONIZATION_MODES),
     required=False,
     help=(
-        "Ionization polarity SIRIUS should record for every run in this batch "
+        "Ionization mode recorded on every new SIRIUS run in this batch; a "
+        "run's recorded mode selects the KDE that scores its Features "
         "(--smoke-test default: config)."
     ),
 )

@@ -9,17 +9,17 @@ per issue #22's acceptance criteria and issue #9's testing decisions.
 
 from __future__ import annotations
 
-import pickle
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 from scipy.stats import gaussian_kde
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from feature_probabilities.calibrate import load_kdes
 from feature_probabilities.cli_fit_kde import main
-from feature_probabilities.kde import GLOBAL_STRATUM, TRAINED_INSTRUMENT_TYPES
 from feature_probabilities.schema import (
     SOURCE_KIND_FIELD_MZML,
     SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
@@ -31,6 +31,9 @@ from feature_probabilities.schema import (
     create_database,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 CONFIG_TOML = """
 db_path = "{db_path}"
 required_sirius_version = "6.0.0"
@@ -41,6 +44,17 @@ kde_output_path = "{kde_output_path}"
 top_k = 200
 """
 
+#: Non-collinear (ion_mass, csi_score) points per Ionization mode --
+#: gaussian_kde needs a non-singular 2D covariance, which a perfectly linear
+#: point set lacks.
+_POINTS_BY_MODE = {
+    "positive": [(200.0, 0.9), (210.0, 0.5), (225.0, 0.7)],
+    "negative": [(300.0, 0.6), (310.0, 0.3), (330.0, 0.55)],
+}
+
+#: The adduct SIRIUS detects for a Feature of each Ionization mode.
+_ADDUCT_BY_MODE = {"positive": "[M+H]+", "negative": "[M-H]-"}
+
 
 def _write_config(tmp_path: Path, db_path: Path, kde_output_path: Path) -> Path:
     config_path = tmp_path / "config.toml"
@@ -50,18 +64,23 @@ def _write_config(tmp_path: Path, db_path: Path, kde_output_path: Path) -> Path:
     return config_path
 
 
-def _insert_ground_truth_run(
-    session: Session, *, instrument_type: str, run_suffix: str
+def _insert_run(
+    session: Session,
+    *,
+    ionization_mode: str,
+    run_suffix: str,
+    instrument_type: str = "Orbitrap",
+    source_kind: str = SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
 ) -> SiriusRun:
     run = SiriusRun(
         extract_id=None,
-        source_kind=SOURCE_KIND_GROUND_TRUTH_MASSSPECGYM,
+        source_kind=source_kind,
         input_file_checksum=f"checksum-{run_suffix}",
         import_params_checksum=None,
         analysis_params_checksum=f"analysis-{run_suffix}",
         sirius_version="6.0.0",
         pysirius_client_version="1.0.0",
-        ionization_mode="positive",
+        ionization_mode=ionization_mode,
         instrument_type=instrument_type,
         input_file_path=f"/data/{run_suffix}.mgf",
     )
@@ -78,21 +97,25 @@ def _insert_correct_assignment(
     inchikey: str,
     ion_mass: float,
     csi_score: float,
-    adduct: str = "[M+H]+",
+    adduct: str,
 ) -> None:
-    """Insert one feature + molecule + annotation whose candidate matches ground truth."""
+    """Insert one feature + annotation whose candidate matches its true InChIKey.
+
+    Reuses the `molecules` row for `inchikey` if one exists (its InChIKey is
+    unique), so several features may share a true structure.
+    """
     feature = Feature(
         run_id=run.run_id,
         external_feature_id=f"feature-{feature_suffix}",
         ion_mass=ion_mass,
-        charge=1,
+        charge=1 if adduct.endswith("+") else -1,
         true_inchikey=inchikey,
     )
-    molecule = Molecule(
-        inchikey=inchikey,
-        smiles="CCO",
-        molecular_formula="C2H6O",
-    )
+    molecule = session.scalars(
+        select(Molecule).where(Molecule.inchikey == inchikey)
+    ).one_or_none()
+    if molecule is None:
+        molecule = Molecule(inchikey=inchikey, smiles="CCO", molecular_formula="C2H6O")
     session.add_all([feature, molecule])
     session.flush()
 
@@ -112,88 +135,163 @@ def _insert_correct_assignment(
     session.flush()
 
 
-def _seed_two_strata(session: Session) -> None:
-    """Three correct-assignment rows each for Orbitrap and QTOF, distinct molecules."""
-    orbitrap_run = _insert_ground_truth_run(
-        session, instrument_type="Orbitrap", run_suffix="orb"
+def _inchikey(ionization_mode: str, index: int) -> str:
+    """A distinct 14-character first-block InChIKey per mode and index."""
+    return f"{ionization_mode[0].upper()}{index:013d}"
+
+
+def _seed_mode(session: Session, ionization_mode: str) -> None:
+    """One Orbitrap ground truth run of `ionization_mode` with `_POINTS_BY_MODE`'s correct assignments."""
+    run = _insert_run(
+        session, ionization_mode=ionization_mode, run_suffix=ionization_mode
     )
-    qtof_run = _insert_ground_truth_run(
-        session, instrument_type="QTOF", run_suffix="qtof"
-    )
-    orbitrap_inchikeys = ["AAAAAAAAAAAAAA", "BBBBBBBBBBBBBB", "CCCCCCCCCCCCCC"]
-    qtof_inchikeys = ["DDDDDDDDDDDDDD", "EEEEEEEEEEEEEE", "FFFFFFFFFFFFFF"]
-    # Non-collinear (ion_mass, csi_score) pairs -- gaussian_kde needs a
-    # non-singular 2D covariance, which a perfectly linear point set lacks.
-    orbitrap_points = [(200.0, 0.9), (210.0, 0.5), (225.0, 0.7)]
-    qtof_points = [(300.0, 0.6), (310.0, 0.3), (330.0, 0.55)]
-    for i, (inchikey, (ion_mass, csi_score)) in enumerate(
-        zip(orbitrap_inchikeys, orbitrap_points, strict=True)
-    ):
+    for i, (ion_mass, csi_score) in enumerate(_POINTS_BY_MODE[ionization_mode]):
         _insert_correct_assignment(
             session,
-            run=orbitrap_run,
-            feature_suffix=f"orb-{i}",
-            inchikey=inchikey,
+            run=run,
+            feature_suffix=f"{ionization_mode}-{i}",
+            inchikey=_inchikey(ionization_mode, i),
             ion_mass=ion_mass,
             csi_score=csi_score,
+            adduct=_ADDUCT_BY_MODE[ionization_mode],
         )
-    for i, (inchikey, (ion_mass, csi_score)) in enumerate(
-        zip(qtof_inchikeys, qtof_points, strict=True)
-    ):
-        _insert_correct_assignment(
-            session,
-            run=qtof_run,
-            feature_suffix=f"qtof-{i}",
-            inchikey=inchikey,
-            ion_mass=ion_mass,
-            csi_score=csi_score,
-        )
+
+
+def _seed_both_modes(session: Session) -> None:
+    """Three distinct correct assignments each for positive and negative mode."""
+    _seed_mode(session, "positive")
+    _seed_mode(session, "negative")
     session.commit()
 
 
-def test_full_run_produces_a_pickle_with_exactly_the_three_stratum_keys(
-    tmp_path: Path,
-) -> None:
+def _fit_from(tmp_path: Path, seed: Callable[[Session], None]) -> tuple[Result, Path]:
+    """Seed a fresh DB with `seed`, run `fit-kde --output`, return its result and artifact path."""
     db_path = tmp_path / "database.duckdb"
     output_path = tmp_path / "model.pkl"
     config_path = _write_config(tmp_path, db_path, output_path)
     engine = create_database(db_path)
     with Session(engine) as session:
-        _seed_two_strata(session)
+        seed(session)
+        session.commit()
     engine.dispose()
 
     result = CliRunner().invoke(
         main, ["--config", str(config_path), "--output", str(output_path)]
     )
+    return result, output_path
+
+
+def _fitted_points(kde: gaussian_kde) -> set[tuple[float, float]]:
+    return {(float(point[0]), float(point[1])) for point in kde.dataset.T}
+
+
+def test_artifact_has_exactly_one_kde_per_ionization_mode(tmp_path: Path) -> None:
+    result, output_path = _fit_from(tmp_path, _seed_both_modes)
 
     assert result.exit_code == 0, result.output
-    assert output_path.exists()
-    with output_path.open("rb") as handle:
-        kdes = pickle.load(handle)
-    assert set(kdes) == {*TRAINED_INSTRUMENT_TYPES, GLOBAL_STRATUM}
+    kdes = load_kdes(output_path)
+    assert set(kdes) == {"positive", "negative"}
     for kde in kdes.values():
         assert isinstance(kde, gaussian_kde)
 
 
-def test_global_stratum_is_fit_over_the_union_of_both_strata(tmp_path: Path) -> None:
-    db_path = tmp_path / "database.duckdb"
-    output_path = tmp_path / "model.pkl"
-    config_path = _write_config(tmp_path, db_path, output_path)
-    engine = create_database(db_path)
-    with Session(engine) as session:
-        _seed_two_strata(session)
-    engine.dispose()
-
-    result = CliRunner().invoke(
-        main, ["--config", str(config_path), "--output", str(output_path)]
-    )
+def test_each_kde_is_fit_only_on_its_own_modes_correct_assignments(
+    tmp_path: Path,
+) -> None:
+    result, output_path = _fit_from(tmp_path, _seed_both_modes)
 
     assert result.exit_code == 0, result.output
-    with output_path.open("rb") as handle:
-        kdes = pickle.load(handle)
-    assert kdes["__global__"].dataset.shape[1] == (
-        kdes["Orbitrap"].dataset.shape[1] + kdes["QTOF"].dataset.shape[1]
+    kdes = load_kdes(output_path)
+    for mode, points in _POINTS_BY_MODE.items():
+        assert _fitted_points(kdes[mode]) == set(points)
+
+
+def test_correct_assignments_dedup_on_true_inchikey_and_adduct_across_instruments(
+    tmp_path: Path,
+) -> None:
+    """A QTOF repeat of an Orbitrap (true InChIKey, adduct) pair collapses into it;
+    the same true InChIKey under another adduct is its own row."""
+
+    def seed(session: Session) -> None:
+        _seed_mode(session, "positive")  # Orbitrap; inserted first, so kept
+        _seed_mode(session, "negative")
+        qtof_run = _insert_run(
+            session,
+            ionization_mode="positive",
+            run_suffix="qtof-positive",
+            instrument_type="QTOF",
+        )
+        _insert_correct_assignment(
+            session,
+            run=qtof_run,
+            feature_suffix="qtof-same-adduct",
+            inchikey=_inchikey("positive", 0),
+            ion_mass=400.0,
+            csi_score=0.1,
+            adduct="[M+H]+",
+        )
+        _insert_correct_assignment(
+            session,
+            run=qtof_run,
+            feature_suffix="qtof-other-adduct",
+            inchikey=_inchikey("positive", 0),
+            ion_mass=420.0,
+            csi_score=0.2,
+            adduct="[M+Na]+",
+        )
+
+    result, output_path = _fit_from(tmp_path, seed)
+
+    assert result.exit_code == 0, result.output
+    assert _fitted_points(load_kdes(output_path)["positive"]) == {
+        *_POINTS_BY_MODE["positive"],
+        (420.0, 0.2),
+    }
+
+
+def test_field_run_features_never_contribute_to_the_fit(tmp_path: Path) -> None:
+    """Even a field-run Feature carrying a matching true InChIKey is ignored."""
+
+    def seed(session: Session) -> None:
+        _seed_both_modes(session)
+        field_run = _insert_run(
+            session,
+            ionization_mode="positive",
+            run_suffix="field",
+            source_kind=SOURCE_KIND_FIELD_MZML,
+        )
+        _insert_correct_assignment(
+            session,
+            run=field_run,
+            feature_suffix="field-0",
+            inchikey=_inchikey("field", 0),
+            ion_mass=999.0,
+            csi_score=0.99,
+            adduct="[M+H]+",
+        )
+
+    result, output_path = _fit_from(tmp_path, seed)
+
+    assert result.exit_code == 0, result.output
+    assert _fitted_points(load_kdes(output_path)["positive"]) == set(
+        _POINTS_BY_MODE["positive"]
     )
+
+
+@pytest.mark.parametrize(
+    ("present_mode", "missing_mode"),
+    [("positive", "negative"), ("negative", "positive")],
+)
+def test_a_mode_without_correct_assignments_exits_nonzero_naming_it(
+    tmp_path: Path, present_mode: str, missing_mode: str
+) -> None:
+    result, output_path = _fit_from(
+        tmp_path, lambda session: _seed_mode(session, present_mode)
+    )
+
+    assert result.exit_code != 0
+    assert repr(missing_mode) in result.output
+    assert not output_path.exists()
 
 
 def test_exactly_one_kde_models_row_is_inserted_pointing_at_the_pickle(
@@ -204,7 +302,7 @@ def test_exactly_one_kde_models_row_is_inserted_pointing_at_the_pickle(
     config_path = _write_config(tmp_path, db_path, output_path)
     engine = create_database(db_path)
     with Session(engine) as session:
-        _seed_two_strata(session)
+        _seed_both_modes(session)
     engine.dispose()
 
     result = CliRunner().invoke(
@@ -235,49 +333,6 @@ def test_zero_ground_truth_rows_exits_nonzero_and_tells_operator_to_run_groundtr
     assert not output_path.exists()
 
 
-def test_field_run_features_are_excluded_even_with_a_matching_inchikey(
-    tmp_path: Path,
-) -> None:
-    """A field-run feature never has `true_inchikey` set, so it can't fake ground truth."""
-    db_path = tmp_path / "database.duckdb"
-    output_path = tmp_path / "model.pkl"
-    config_path = _write_config(tmp_path, db_path, output_path)
-    engine = create_database(db_path)
-    with Session(engine) as session:
-        field_run = SiriusRun(
-            extract_id=None,
-            source_kind=SOURCE_KIND_FIELD_MZML,
-            input_file_checksum="field-checksum",
-            import_params_checksum="import-checksum",
-            analysis_params_checksum="analysis-checksum",
-            sirius_version="6.0.0",
-            pysirius_client_version="1.0.0",
-            ionization_mode="positive",
-            instrument_type="Orbitrap",
-            input_file_path="/data/field.mzML",
-        )
-        session.add(field_run)
-        session.flush()
-        _insert_correct_assignment(
-            session,
-            run=field_run,
-            feature_suffix="field-0",
-            inchikey="AAAAAAAAAAAAAA",
-            ion_mass=200.0,
-            csi_score=0.5,
-        )
-        # A field-run feature's true_inchikey is always NULL, per the schema.
-        feature = session.scalars(select(Feature)).one()
-        feature.true_inchikey = None
-        session.commit()
-    engine.dispose()
-
-    result = CliRunner().invoke(main, ["--config", str(config_path)])
-
-    assert result.exit_code != 0
-    assert "generate-groundtruth" in result.output
-
-
 def test_running_twice_produces_two_kde_models_rows_not_an_overwrite(
     tmp_path: Path,
 ) -> None:
@@ -286,7 +341,7 @@ def test_running_twice_produces_two_kde_models_rows_not_an_overwrite(
     config_path = _write_config(tmp_path, db_path, output_path)
     engine = create_database(db_path)
     with Session(engine) as session:
-        _seed_two_strata(session)
+        _seed_both_modes(session)
     engine.dispose()
 
     first = CliRunner().invoke(main, ["--config", str(config_path)])
@@ -315,7 +370,7 @@ def test_db_flag_overrides_the_config_files_db_path(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path, config_only_db_path, output_path)
     engine = create_database(override_db_path)
     with Session(engine) as session:
-        _seed_two_strata(session)
+        _seed_both_modes(session)
     engine.dispose()
 
     result = CliRunner().invoke(
@@ -335,7 +390,7 @@ def test_output_flag_overrides_the_config_files_kde_output_path(
     config_path = _write_config(tmp_path, db_path, config_output_path)
     engine = create_database(db_path)
     with Session(engine) as session:
-        _seed_two_strata(session)
+        _seed_both_modes(session)
     engine.dispose()
 
     result = CliRunner().invoke(
@@ -354,43 +409,6 @@ def test_missing_config_file_fails_fast_with_nonzero_exit(tmp_path: Path) -> Non
 
     assert result.exit_code != 0
     assert "does-not-exist.toml" in result.output
-
-
-@pytest.mark.parametrize("missing_stratum", ["Orbitrap", "QTOF"])
-def test_missing_one_stratums_data_exits_nonzero_with_a_clear_message(
-    tmp_path: Path, missing_stratum: str
-) -> None:
-    db_path = tmp_path / "database.duckdb"
-    output_path = tmp_path / "model.pkl"
-    config_path = _write_config(tmp_path, db_path, output_path)
-    engine = create_database(db_path)
-    with Session(engine) as session:
-        present_instrument_type = (
-            "QTOF" if missing_stratum == "Orbitrap" else "Orbitrap"
-        )
-        run = _insert_ground_truth_run(
-            session, instrument_type=present_instrument_type, run_suffix="only"
-        )
-        present_points = [(200.0, 0.9), (210.0, 0.5), (225.0, 0.7)]
-        present_inchikeys = ["AAAAAAAAAAAAAA", "BBBBBBBBBBBBBB", "CCCCCCCCCCCCCC"]
-        for i, (inchikey, (ion_mass, csi_score)) in enumerate(
-            zip(present_inchikeys, present_points, strict=True)
-        ):
-            _insert_correct_assignment(
-                session,
-                run=run,
-                feature_suffix=f"only-{i}",
-                inchikey=inchikey,
-                ion_mass=ion_mass,
-                csi_score=csi_score,
-            )
-        session.commit()
-    engine.dispose()
-
-    result = CliRunner().invoke(main, ["--config", str(config_path)])
-
-    assert result.exit_code != 0
-    assert missing_stratum in result.output
 
 
 SMOKE_TEST_TOML = """
@@ -424,7 +442,7 @@ def test_smoke_test_fits_from_the_smoke_db_and_writes_under_the_smoke_kde_path(
     smoke_db_path.parent.mkdir()
     engine = create_database(smoke_db_path)
     with Session(engine) as session:
-        _seed_two_strata(session)
+        _seed_both_modes(session)
     engine.dispose()
 
     result = CliRunner().invoke(main, ["--config", str(config_path), "--smoke-test"])

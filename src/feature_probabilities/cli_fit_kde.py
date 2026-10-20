@@ -2,16 +2,17 @@
 
 Reads every ground-truth `features`/`annotations` row already in the DB
 (populated by `generate-groundtruth`, #20/#21 -- this executable never talks
-to SIRIUS or MassSpecGym itself), applies the correctness-matching-and-
-deduplication transform (`groundtruth.correct_assignment_rows`, #18), fits
-one `scipy.stats.gaussian_kde` per stratum (`kde.fit_stratified_kdes`, per
-the KDE calibration method decision, issue #7) -- `Orbitrap`, `QTOF`, and a
-pooled `__global__` over every instrument type combined -- and persists both
-the pickle and its `kde_models` row.
+to SIRIUS or fetches the ground truth set itself), applies the
+correctness-matching-and-deduplication transform
+(`groundtruth.correct_assignment_rows`, #18), fits exactly one
+`scipy.stats.gaussian_kde` per Ionization mode -- `positive` and `negative`,
+each only on its own mode's correct assignments (`kde.fit_stratified_kdes`,
+ADR 0002) -- and persists both the pickle and its `kde_models` row.
 
 Exits non-zero with a clear message (rather than a raw fitting traceback) if
 there is no usable ground-truth data yet, telling the operator to run
-`generate-groundtruth` first.
+`generate-groundtruth` first, or if either Ionization mode has none, naming
+that mode.
 """
 
 from __future__ import annotations
@@ -80,9 +81,9 @@ def _ground_truth_rows(session: Session) -> list[GroundTruthAnnotationRow]:
     """Every ground-truth-run feature-structure-candidate pair, joined and flattened.
 
     Restricted to `sirius_runs.source_kind == 'ground_truth_massspecgym'` rows
-    whose `features.true_inchikey` was actually resolved (field-run features
-    always have it NULL, and a ground-truth feature MassSpecGym's identifier
-    lookup missed is unusable for the correctness match).
+    whose `features.true_inchikey` was actually resolved, so a field-run
+    Feature never contributes to the fit. Each row carries its SIRIUS run's
+    Ionization mode, which selects the KDE it is fitted into.
     """
     stmt = (
         select(Feature, Annotation, Molecule, SiriusRun)
@@ -98,7 +99,7 @@ def _ground_truth_rows(session: Session) -> list[GroundTruthAnnotationRow]:
             candidate_inchikey=molecule.inchikey,
             true_inchikey=feature.true_inchikey,
             adduct=annotation.adduct,
-            instrument_type=sirius_run.instrument_type,
+            ionization_mode=sirius_run.ionization_mode,
             ion_mass=feature.ion_mass,
             csi_score=annotation.csi_score,
         )
@@ -128,19 +129,19 @@ def fit_kde(
     output_path: Path,
     groundtruth_command: str = "generate-groundtruth",
 ) -> FitKdeSummary:
-    """Fit every stratum's KDE from `session`'s ground truth and persist it.
+    """Fit one KDE per Ionization mode from `session`'s ground truth and persist it.
 
-    Pickles the fitted `{"Orbitrap": kde, "QTOF": kde, "__global__": kde}`
-    dict to `output_path` and inserts+commits one `kde_models` row pointing
-    at it. `groundtruth_command` is the command a no-data error tells the
-    operator to run.
+    Pickles the fitted `{"positive": kde, "negative": kde}` dict to
+    `output_path` and inserts+commits one `kde_models` row pointing at it.
+    `groundtruth_command` is the command a no-data error tells the operator
+    to run.
 
     Raises:
         NoGroundTruthDataError: there are zero correct-assignment rows to
             fit on -- `generate-groundtruth` hasn't produced usable data yet.
-        EmptyStratumError: propagated from `kde.fit_stratified_kdes` if a
-            trained stratum has correct-assignment rows for the *other*
-            instrument type but none for its own.
+        EmptyStratumError: propagated from `kde.fit_stratified_kdes` if one
+            Ionization mode has correct-assignment rows but the other has
+            none.
     """
     ground_truth_rows = _ground_truth_rows(session)
     correct_rows = correct_assignment_rows(ground_truth_rows)
@@ -230,7 +231,7 @@ def main(
     output_path: Path | None,
     smoke_test: bool,
 ) -> None:
-    """Fit stratified KDE calibration models from the ground-truth table."""
+    """Fit one KDE calibration model per Ionization mode from the ground-truth table."""
     if smoke_test and db_path is not None:
         raise click.UsageError("--smoke-test cannot be combined with --db.")
     try:

@@ -18,7 +18,7 @@ def _row(
     candidate_inchikey: str = "ABCDEFGHIJKLMN",
     true_inchikey: str = "ABCDEFGHIJKLMN",
     adduct: str = "[M+H]+",
-    instrument_type: str = "Orbitrap",
+    ionization_mode: str = "positive",
     ion_mass: float = 300.1,
     csi_score: float = 0.9,
 ) -> GroundTruthAnnotationRow:
@@ -27,7 +27,7 @@ def _row(
         candidate_inchikey=candidate_inchikey,
         true_inchikey=true_inchikey,
         adduct=adduct,
-        instrument_type=instrument_type,
+        ionization_mode=ionization_mode,
         ion_mass=ion_mass,
         csi_score=csi_score,
     )
@@ -90,21 +90,18 @@ def test_dedup_keeps_the_lowest_feature_id_among_a_shared_group() -> None:
             true_inchikey="AAAAAAAAAAAAAA",
             candidate_inchikey="AAAAAAAAAAAAAA",
             adduct="[M+H]+",
-            instrument_type="Orbitrap",
         ),
         _row(
             feature_id=10,
             true_inchikey="AAAAAAAAAAAAAA",
             candidate_inchikey="AAAAAAAAAAAAAA",
             adduct="[M+H]+",
-            instrument_type="Orbitrap",
         ),
         _row(
             feature_id=20,
             true_inchikey="AAAAAAAAAAAAAA",
             candidate_inchikey="AAAAAAAAAAAAAA",
             adduct="[M+H]+",
-            instrument_type="Orbitrap",
         ),
     ]
 
@@ -113,21 +110,21 @@ def test_dedup_keeps_the_lowest_feature_id_among_a_shared_group() -> None:
     assert [row.feature_id for row in kept] == [10]
 
 
-def test_dedup_key_is_true_inchikey_adduct_and_instrument_type() -> None:
-    """A difference in any one of the three key fields keeps both rows distinct."""
+def test_dedup_key_is_true_inchikey_and_adduct() -> None:
+    """Same true InChIKey and adduct collapse; a different adduct stays distinct."""
     shared = {
         "true_inchikey": "AAAAAAAAAAAAAA",
         "candidate_inchikey": "AAAAAAAAAAAAAA",
     }
     rows = [
-        _row(feature_id=1, adduct="[M+H]+", instrument_type="Orbitrap", **shared),
-        _row(feature_id=2, adduct="[M+Na]+", instrument_type="Orbitrap", **shared),
-        _row(feature_id=3, adduct="[M+H]+", instrument_type="QTOF", **shared),
+        _row(feature_id=1, adduct="[M+H]+", ion_mass=301.0, csi_score=0.9, **shared),
+        _row(feature_id=2, adduct="[M+H]+", ion_mass=301.1, csi_score=0.4, **shared),
+        _row(feature_id=3, adduct="[M+Na]+", ion_mass=323.0, csi_score=0.8, **shared),
     ]
 
     kept = correct_assignment_rows(rows)
 
-    assert {row.feature_id for row in kept} == {1, 2, 3}
+    assert [row.feature_id for row in kept] == [1, 3]
 
 
 def test_dedup_is_independent_of_input_order() -> None:
@@ -178,8 +175,8 @@ def test_correct_assignment_rows_carries_fields_the_kde_fit_needs() -> None:
             feature_id=1,
             true_inchikey="AAAAAAAAAAAAAA",
             candidate_inchikey="AAAAAAAAAAAAAA",
-            adduct="[M+H]+",
-            instrument_type="Orbitrap",
+            adduct="[M-H]-",
+            ionization_mode="negative",
             ion_mass=123.456,
             csi_score=0.75,
         )
@@ -191,8 +188,8 @@ def test_correct_assignment_rows_carries_fields_the_kde_fit_needs() -> None:
         CorrectAssignmentRow(
             feature_id=1,
             true_inchikey="AAAAAAAAAAAAAA",
-            adduct="[M+H]+",
-            instrument_type="Orbitrap",
+            adduct="[M-H]-",
+            ionization_mode="negative",
             ion_mass=123.456,
             csi_score=0.75,
         )

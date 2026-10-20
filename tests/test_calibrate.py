@@ -1,10 +1,9 @@
 """Tests for calibration application: scoring annotations against a fitted KDE pickle.
 
-Exercises issue #24's acceptance criteria directly: stratum selection by
-instrument type, the `__global__` fallback for an unmatched instrument
-type, and `calibration_scores` versioning across `kde_model_id`s -- all
-against a real temp DuckDB and real `scipy.stats.gaussian_kde` fits, per the
-project's testing decisions (no DB or KDE mocking).
+Exercises KDE selection by the SIRIUS run's Ionization mode (ADR 0002) and
+`calibration_scores` versioning across `kde_model_id`s -- all against a real
+temp DuckDB and real `scipy.stats.gaussian_kde` fits, per the project's
+testing decisions (no DB or KDE mocking).
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from feature_probabilities.calibrate import apply_calibration, load_kdes
-from feature_probabilities.kde import GLOBAL_STRATUM
 from feature_probabilities.schema import (
     Annotation,
     CalibrationScore,
@@ -36,19 +34,15 @@ def _kde(points: list[tuple[float, float]]) -> gaussian_kde:
 
 
 def _kdes() -> dict[str, gaussian_kde]:
-    orbitrap_points = [(300.0, 0.9), (301.0, 0.85), (299.5, 0.88), (300.5, 0.92)]
-    qtof_points = [(500.0, 0.5), (501.0, 0.55), (499.0, 0.52), (500.5, 0.48)]
-    return {
-        "Orbitrap": _kde(orbitrap_points),
-        "QTOF": _kde(qtof_points),
-        GLOBAL_STRATUM: _kde(orbitrap_points + qtof_points),
-    }
+    positive_points = [(300.0, 0.9), (301.0, 0.85), (299.5, 0.88), (300.5, 0.92)]
+    negative_points = [(500.0, 0.5), (501.0, 0.55), (499.0, 0.52), (500.5, 0.48)]
+    return {"positive": _kde(positive_points), "negative": _kde(negative_points)}
 
 
 def _insert_annotation(
     session: Session,
     *,
-    instrument_type: str,
+    ionization_mode: str,
     ion_mass: float,
     csi_score: float,
     inchikey: str,
@@ -66,8 +60,8 @@ def _insert_annotation(
         analysis_params_checksum=f"analysis-{run_suffix}",
         sirius_version="6.0.0",
         pysirius_client_version="1.0.0",
-        ionization_mode="positive",
-        instrument_type=instrument_type,
+        ionization_mode=ionization_mode,
+        instrument_type="Orbitrap",
         input_file_path=f"/data/{run_suffix}.mzML",
     )
     session.add(run)
@@ -99,25 +93,25 @@ def _insert_annotation(
     return annotation.annotation_id
 
 
-def test_each_annotation_is_scored_against_its_matching_trained_stratum() -> None:
+def test_each_annotation_is_scored_by_its_runs_ionization_mode_kde() -> None:
     engine = create_database(":memory:")
     with Session(engine) as session:
         kdes = _kdes()
-        orbitrap_id = _insert_annotation(
+        positive_id = _insert_annotation(
             session,
-            instrument_type="Orbitrap",
+            ionization_mode="positive",
             ion_mass=300.2,
             csi_score=0.9,
             inchikey="AAAAAAAAAAAAAA",
-            run_suffix="orb",
+            run_suffix="positive",
         )
-        qtof_id = _insert_annotation(
+        negative_id = _insert_annotation(
             session,
-            instrument_type="QTOF",
+            ionization_mode="negative",
             ion_mass=500.2,
             csi_score=0.51,
             inchikey="BBBBBBBBBBBBBB",
-            run_suffix="qtof",
+            run_suffix="negative",
         )
         kde_model = KdeModel(artifact_path="/artifacts/kde-v1.pkl")
         session.add(kde_model)
@@ -127,57 +121,30 @@ def test_each_annotation_is_scored_against_its_matching_trained_stratum() -> Non
             session,
             kdes,
             kde_model.kde_model_id,
-            annotation_ids=[orbitrap_id, qtof_id],
+            annotation_ids=[positive_id, negative_id],
         )
 
         assert summary.annotations_scored == 2
         assert summary.kde_model_id == kde_model.kde_model_id
 
-        orbitrap_score = session.get(
-            CalibrationScore, (orbitrap_id, kde_model.kde_model_id)
+        positive_score = session.get(
+            CalibrationScore, (positive_id, kde_model.kde_model_id)
         )
-        qtof_score = session.get(CalibrationScore, (qtof_id, kde_model.kde_model_id))
-        assert orbitrap_score is not None
-        assert qtof_score is not None
-        assert orbitrap_score.score == pytest.approx(
-            float(kdes["Orbitrap"].pdf((300.2, 0.9))[0])
+        negative_score = session.get(
+            CalibrationScore, (negative_id, kde_model.kde_model_id)
         )
-        assert qtof_score.score == pytest.approx(
-            float(kdes["QTOF"].pdf((500.2, 0.51))[0])
+        assert positive_score is not None
+        assert negative_score is not None
+        assert positive_score.score == pytest.approx(
+            float(kdes["positive"].pdf((300.2, 0.9))[0])
         )
-        # Sanity: the two strata's KDEs actually disagree here, so a
-        # mismatched-stratum bug (e.g. always using __global__) would fail
-        # the exact-match assertions above.
-        assert orbitrap_score.score != pytest.approx(
-            float(kdes["QTOF"].pdf((300.2, 0.9))[0])
+        assert negative_score.score == pytest.approx(
+            float(kdes["negative"].pdf((500.2, 0.51))[0])
         )
-
-
-def test_unmatched_instrument_type_falls_back_to_global_without_erroring() -> None:
-    engine = create_database(":memory:")
-    with Session(engine) as session:
-        kdes = _kdes()
-        annotation_id = _insert_annotation(
-            session,
-            instrument_type="Waters",
-            ion_mass=350.0,
-            csi_score=0.7,
-            inchikey="CCCCCCCCCCCCCC",
-            run_suffix="waters",
-        )
-        kde_model = KdeModel(artifact_path="/artifacts/kde-v1.pkl")
-        session.add(kde_model)
-        session.flush()
-
-        summary = apply_calibration(
-            session, kdes, kde_model.kde_model_id, annotation_ids=[annotation_id]
-        )
-
-        assert summary.annotations_scored == 1
-        stored = session.get(CalibrationScore, (annotation_id, kde_model.kde_model_id))
-        assert stored is not None
-        assert stored.score == pytest.approx(
-            float(kdes[GLOBAL_STRATUM].pdf((350.0, 0.7))[0])
+        # Sanity: the two modes' KDEs actually disagree here, so a
+        # mismatched-mode bug would fail the exact-match assertions above.
+        assert positive_score.score != pytest.approx(
+            float(kdes["negative"].pdf((300.2, 0.9))[0])
         )
 
 
@@ -187,7 +154,7 @@ def test_second_kde_model_id_inserts_a_second_row_rather_than_overwriting() -> N
         kdes_v1 = _kdes()
         annotation_id = _insert_annotation(
             session,
-            instrument_type="Orbitrap",
+            ionization_mode="positive",
             ion_mass=300.2,
             csi_score=0.9,
             inchikey="DDDDDDDDDDDDDD",
@@ -203,11 +170,8 @@ def test_second_kde_model_id_inserts_a_second_row_rather_than_overwriting() -> N
         # A distinctly different refit, so its pdf value at the same point
         # differs from kdes_v1's -- proving the first row survives untouched.
         kdes_v2 = {
-            "Orbitrap": _kde([(310.0, 0.6), (311.0, 0.62), (309.5, 0.58)]),
-            "QTOF": _kde([(500.0, 0.5), (501.0, 0.55), (499.0, 0.52)]),
-            GLOBAL_STRATUM: _kde(
-                [(310.0, 0.6), (311.0, 0.62), (309.5, 0.58), (500.0, 0.5)]
-            ),
+            "positive": _kde([(310.0, 0.6), (311.0, 0.62), (309.5, 0.58)]),
+            "negative": _kde([(500.0, 0.5), (501.0, 0.55), (499.0, 0.52)]),
         }
         kde_model_2 = KdeModel(artifact_path="/artifacts/kde-v2.pkl")
         session.add(kde_model_2)
@@ -233,10 +197,10 @@ def test_second_kde_model_id_inserts_a_second_row_rather_than_overwriting() -> N
             row.score for row in rows if row.kde_model_id == kde_model_2.kde_model_id
         )
         assert score_v1 == pytest.approx(
-            float(kdes_v1["Orbitrap"].pdf((300.2, 0.9))[0])
+            float(kdes_v1["positive"].pdf((300.2, 0.9))[0])
         )
         assert score_v2 == pytest.approx(
-            float(kdes_v2["Orbitrap"].pdf((300.2, 0.9))[0])
+            float(kdes_v2["positive"].pdf((300.2, 0.9))[0])
         )
         assert score_v1 != pytest.approx(score_v2)
 
@@ -253,7 +217,7 @@ def test_same_kde_model_id_updates_the_existing_row_in_place() -> None:
         kdes_v1 = _kdes()
         annotation_id = _insert_annotation(
             session,
-            instrument_type="Orbitrap",
+            ionization_mode="positive",
             ion_mass=300.2,
             csi_score=0.9,
             inchikey="GGGGGGGGGGGGGG",
@@ -270,11 +234,8 @@ def test_same_kde_model_id_updates_the_existing_row_in_place() -> None:
         # changed pdf value at the same point proves the row was
         # overwritten in place rather than left stale or duplicated.
         kdes_v2 = {
-            "Orbitrap": _kde([(310.0, 0.6), (311.0, 0.62), (309.5, 0.58)]),
-            "QTOF": _kde([(500.0, 0.5), (501.0, 0.55), (499.0, 0.52)]),
-            GLOBAL_STRATUM: _kde(
-                [(310.0, 0.6), (311.0, 0.62), (309.5, 0.58), (500.0, 0.5)]
-            ),
+            "positive": _kde([(310.0, 0.6), (311.0, 0.62), (309.5, 0.58)]),
+            "negative": _kde([(500.0, 0.5), (501.0, 0.55), (499.0, 0.52)]),
         }
 
         summary = apply_calibration(
@@ -289,10 +250,10 @@ def test_same_kde_model_id_updates_the_existing_row_in_place() -> None:
         ).all()
         assert len(rows) == 1
         assert rows[0].score == pytest.approx(
-            float(kdes_v2["Orbitrap"].pdf((300.2, 0.9))[0])
+            float(kdes_v2["positive"].pdf((300.2, 0.9))[0])
         )
         assert rows[0].score != pytest.approx(
-            float(kdes_v1["Orbitrap"].pdf((300.2, 0.9))[0])
+            float(kdes_v1["positive"].pdf((300.2, 0.9))[0])
         )
 
 
@@ -302,7 +263,7 @@ def test_only_requested_annotation_ids_are_scored_other_rows_untouched() -> None
         kdes = _kdes()
         included_id = _insert_annotation(
             session,
-            instrument_type="Orbitrap",
+            ionization_mode="positive",
             ion_mass=300.2,
             csi_score=0.9,
             inchikey="EEEEEEEEEEEEEE",
@@ -310,7 +271,7 @@ def test_only_requested_annotation_ids_are_scored_other_rows_untouched() -> None
         )
         _insert_annotation(
             session,
-            instrument_type="QTOF",
+            ionization_mode="negative",
             ion_mass=500.2,
             csi_score=0.51,
             inchikey="FFFFFFFFFFFFFF",
@@ -338,6 +299,6 @@ def test_load_kdes_round_trips_a_pickled_artifact(tmp_path: Path) -> None:
     loaded = load_kdes(artifact_path)
 
     assert set(loaded) == set(kdes)
-    for stratum, kde in kdes.items():
-        assert isinstance(loaded[stratum], gaussian_kde)
-        assert loaded[stratum].pdf((300.0, 0.9)) == pytest.approx(kde.pdf((300.0, 0.9)))
+    for mode, kde in kdes.items():
+        assert isinstance(loaded[mode], gaussian_kde)
+        assert loaded[mode].pdf((300.0, 0.9)) == pytest.approx(kde.pdf((300.0, 0.9)))

@@ -42,6 +42,21 @@ is killed and the job fails with `SiriusJobStalledError`.
 fresh SIRIUS; `annotate` does the same per mzML file. Rerunning retries only
 the failed chunks or files.
 
+## Calibration
+
+`fit-kde` fits one KDE per Ionization mode, `positive` and `negative`. Each
+is a 2D Gaussian KDE over (ion mass, CSI:FingerID score), fitted only on
+that mode's correct assignments from ground truth runs, deduplicated by
+(true InChIKey, SIRIUS-detected adduct). Instrument type does not split
+calibration, and there is no fallback KDE (ADR 0002). If either mode has no
+correct assignments, `fit-kde` fails and names that mode.
+
+`annotate` scores each field run's Features with the KDE for the Ionization
+mode recorded on that run, which comes from `--ionization-mode` when the run
+is created. A KDE artifact missing either mode, such as one fitted before
+per-mode calibration, is rejected before any mzML reaches SIRIUS; rerun
+`fit-kde`.
+
 ## Smoke test
 
 `--smoke-test` runs the whole pipeline on a small, isolated input so a change

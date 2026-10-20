@@ -201,7 +201,7 @@ class Annotation(Base):
 
 
 class KdeModel(Base):
-    """One `fit-kde` run's pickled calibration model: a dict keyed by stratum name."""
+    """One `fit-kde` run's pickled calibration model: a dict keyed by Ionization mode."""
 
     __tablename__ = "kde_models"
 

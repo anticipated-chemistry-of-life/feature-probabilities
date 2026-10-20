@@ -1,15 +1,14 @@
-"""Pure data transform: deduplicated correct-assignment rows -> per-stratum KDEs.
+"""Pure data transform: deduplicated correct-assignment rows -> per-Ionization-mode KDEs.
 
 Turns the deduplicated `CorrectAssignmentRow`s `groundtruth.correct_assignment_rows`
 produces into the fitted `scipy.stats.gaussian_kde` models `fit-kde` (#22)
 pickles, per the KDE calibration method decision (issue #7, amended by #9's
-InChIKey/SMILES correction):
+InChIKey/SMILES correction and ADR 0002):
 
-- Stratified by `instrument_type`: one dedicated KDE each for `Orbitrap` and
-  `QTOF` (:data:`TRAINED_INSTRUMENT_TYPES`), plus a pooled
-  :data:`GLOBAL_STRATUM` KDE fit over every row regardless of instrument
-  type -- the fallback `annotate` uses when a feature's instrument type
-  matches neither trained stratum.
+- Stratified by Ionization mode and by nothing else: exactly one KDE each
+  for `positive` and `negative` (:data:`IONIZATION_MODES`). Instrument type
+  does not split calibration, and there is no pooled fallback KDE: every
+  SIRIUS run has an Ionization mode, and both modes always have a KDE.
 - Each KDE is a 2D `scipy.stats.gaussian_kde` over (ion mass, CSI:FingerID
   score), using scipy's Scott's-rule default bandwidth with no manual
   rescaling (ion-mass and CSI-score variances are of comparable magnitude in
@@ -32,21 +31,14 @@ if TYPE_CHECKING:
 
     from feature_probabilities.groundtruth import CorrectAssignmentRow
 
-#: Stratum key for the pooled model fit over every instrument type's rows
-#: combined -- the fallback `annotate` uses when a feature's instrument type
-#: matches neither trained stratum.
-GLOBAL_STRATUM = "__global__"
-
-#: `instrument_type` values `fit-kde` trains a dedicated stratum for, per the
-#: KDE calibration method decision (issue #7): both instrument types
-#: MassSpecGym's ground truth amply covers. Any other `instrument_type`
-#: value (unknown/missing metadata, a future third instrument type) still
-#: contributes to :data:`GLOBAL_STRATUM` but gets no dedicated stratum.
-TRAINED_INSTRUMENT_TYPES = ("Orbitrap", "QTOF")
+#: The Ionization modes calibration is split by: the exact keys of every
+#: `fit-kde` artifact, and the `sirius_runs.ionization_mode` values
+#: `annotate` scores against them.
+IONIZATION_MODES = ("positive", "negative")
 
 
 class EmptyStratumError(Exception):
-    """Raised when a stratum this method requires has zero rows to fit on."""
+    """Raised when an Ionization mode has zero correct-assignment rows to fit on."""
 
 
 def _fit_one(rows: Sequence[CorrectAssignmentRow]) -> gaussian_kde:
@@ -58,26 +50,21 @@ def _fit_one(rows: Sequence[CorrectAssignmentRow]) -> gaussian_kde:
 def fit_stratified_kdes(
     rows: Sequence[CorrectAssignmentRow],
 ) -> dict[str, gaussian_kde]:
-    """Fit one KDE per trained instrument-type stratum plus a pooled fallback.
+    """Fit one KDE per Ionization mode, each only on that mode's rows.
 
-    Returns a dict with exactly the keys `TRAINED_INSTRUMENT_TYPES` plus
-    `GLOBAL_STRATUM`. `GLOBAL_STRATUM` is fit over every row in `rows`
-    regardless of `instrument_type`, so it always covers at least the union
-    of the trained strata's rows.
+    Returns a dict with exactly the keys :data:`IONIZATION_MODES`.
 
     Raises:
         EmptyStratumError: `rows` has zero rows for one of
-            `TRAINED_INSTRUMENT_TYPES`, or `rows` itself is empty.
+            :data:`IONIZATION_MODES` (including when `rows` is empty).
     """
     kdes: dict[str, gaussian_kde] = {}
-    for instrument_type in TRAINED_INSTRUMENT_TYPES:
-        stratum_rows = [row for row in rows if row.instrument_type == instrument_type]
-        if not stratum_rows:
+    for ionization_mode in IONIZATION_MODES:
+        mode_rows = [row for row in rows if row.ionization_mode == ionization_mode]
+        if not mode_rows:
             raise EmptyStratumError(
-                f"No correct-assignment rows for instrument type "
-                f"{instrument_type!r}; cannot fit its KDE stratum."
+                f"No correct-assignment rows for Ionization mode "
+                f"{ionization_mode!r}; cannot fit its KDE."
             )
-        kdes[instrument_type] = _fit_one(stratum_rows)
-
-    kdes[GLOBAL_STRATUM] = _fit_one(rows)
+        kdes[ionization_mode] = _fit_one(mode_rows)
     return kdes
