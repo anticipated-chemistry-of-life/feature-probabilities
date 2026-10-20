@@ -30,7 +30,9 @@ kde_output_path = "models/kde_model.pkl"
 # iterating on the pipeline. `generate-groundtruth --smoke-test` deletes and
 # recreates `db_path` on every run, so it must never be the real db_path
 # (enforced). `annotate --smoke-test` defaults its inputs and export to the
-# values below; any explicitly passed flag still wins.
+# values below; any explicitly passed flag still wins. Each smoke mzML's
+# Ionization mode and instrument model come from its row in `metadata_csv`,
+# as in any `annotate` batch.
 [smoke_test]
 db_path = "db/smoke_test/database.duckdb"
 kde_output_path = "models/smoke_test/kde_model.pkl"
@@ -39,8 +41,6 @@ kde_output_path = "models/smoke_test/kde_model.pkl"
 spectra_per_ionization_mode = 500
 mzml_dir = "data/smoke_test"
 metadata_csv = "data/smoke_test/metadata.tsv"
-ionization_mode = "positive"
-instrument_type = "Orbitrap"
 export_path = "db/smoke_test/feature_probabilities.csv"
 
 [sirius]
@@ -81,8 +81,9 @@ detectable_adducts = [
 # the shared builder `instrument.analysis_params_for_instrument_type` injects
 # the profile of a SIRIUS run's own Instrument type (GLOSSARY.md), so a value
 # here could only ever disagree with the data it is applied to.
-# `generate-groundtruth` builds every chunk's parameters through it;
-# `annotate` does not yet, so field runs still get SIRIUS's default profile.
+# `generate-groundtruth` builds every chunk's parameters through it, and
+# `annotate` every field run's, from the Instrument type its metadata row's
+# `instrument_model` resolves to.
 [sirius.analysis_params.formula_id_params]
 enabled = true
 number_of_candidates = 10

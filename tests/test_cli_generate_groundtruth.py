@@ -741,8 +741,6 @@ kde_output_path = "unused-smoke-model.pkl"
 spectra_per_ionization_mode = {spectra_per_ionization_mode}
 mzml_dir = "unused-smoke-mzml-dir"
 metadata_csv = "unused-smoke-metadata.csv"
-ionization_mode = "positive"
-instrument_type = "Orbitrap"
 export_path = "unused-smoke-export.csv"
 """
 

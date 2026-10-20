@@ -22,15 +22,15 @@ from feature_probabilities.metadata import (
 )
 from feature_probabilities.schema import Extract, Species, create_database
 
-BASE_CSV = """sample_id,taxon_scientific_name,ncbi_taxid,family,organ,collector,filename
-EX-001,Panthera leo,9689,Felidae,leaf,field team A,20240307_run_01.mzML
-EX-002,Bos taurus,9913,Bovidae,root,field team B,20240307_run_02.mzML
+BASE_CSV = """sample_id,taxon_scientific_name,ncbi_taxid,family,organ,collector,filename,ionization_mode,instrument_model
+EX-001,Panthera leo,9689,Felidae,leaf,field team A,20240307_run_01.mzML,positive,LC-MS QExactive Plus
+EX-002,Bos taurus,9913,Bovidae,root,field team B,20240307_run_02.mzML,negative,LCMS – Synapt XS
 """
 
 
 def write_csv(tmp_path: Path, text: str = BASE_CSV) -> Path:
     csv_path = tmp_path / "metadata.csv"
-    csv_path.write_text(text)
+    csv_path.write_text(text, encoding="utf-8")
     return csv_path
 
 

@@ -53,13 +53,18 @@ ground_truth_revision = "abc123"
 top_k = 200
 """
 
-BASE_CSV = """sample_id,filename,taxon_scientific_name,ncbi_taxid,family,organ
-EX-001,EX-001.mzML,Panthera leo,9689,Felidae,leaf
+BASE_CSV = """sample_id,filename,taxon_scientific_name,ncbi_taxid,family,organ,ionization_mode,instrument_model
+EX-001,EX-001.mzML,Panthera leo,9689,Felidae,leaf,positive,LC-MS QExactive Plus
 """
 
-TWO_EXTRACT_CSV = """sample_id,filename,taxon_scientific_name,ncbi_taxid,family,organ
-EX-001,EX-001.mzML,Panthera leo,9689,Felidae,leaf
-EX-002,EX-002.mzML,Panthera tigris,9694,Felidae,root
+TWO_EXTRACT_CSV = """sample_id,filename,taxon_scientific_name,ncbi_taxid,family,organ,ionization_mode,instrument_model
+EX-001,EX-001.mzML,Panthera leo,9689,Felidae,leaf,positive,LC-MS QExactive Plus
+EX-002,EX-002.mzML,Panthera tigris,9694,Felidae,root,positive,LC-MS QExactive Plus
+"""
+
+#: One file whose metadata row carries the given acquisition values.
+ACQUISITION_CSV = """sample_id,filename,taxon_scientific_name,ionization_mode,instrument_model
+EX-001,EX-001.mzML,Panthera leo,{ionization_mode},{instrument_model}
 """
 
 #: (ion_mass, csi_score) points bracketing `_fake_sirius_for`'s default
@@ -80,7 +85,7 @@ def _write_config(tmp_path: Path, db_path: Path) -> Path:
 
 def _write_csv(tmp_path: Path, text: str = BASE_CSV) -> Path:
     csv_path = tmp_path / "metadata.csv"
-    csv_path.write_text(text)
+    csv_path.write_text(text, encoding="utf-8")
     return csv_path
 
 
@@ -190,11 +195,7 @@ def _seed_kde_model(
 
 
 def _invoke(
-    config_path: Path,
-    mzml_dir: Path,
-    csv_path: Path,
-    *extra_args: str,
-    ionization_mode: str = "positive",
+    config_path: Path, mzml_dir: Path, csv_path: Path, *extra_args: str
 ) -> Result:
     return CliRunner().invoke(
         main,
@@ -205,47 +206,226 @@ def _invoke(
             str(mzml_dir),
             "--metadata-csv",
             str(csv_path),
-            "--ionization-mode",
-            ionization_mode,
-            "--instrument-type",
-            "Orbitrap",
             *extra_args,
         ],
     )
 
 
 @pytest.mark.parametrize(
-    ("ionization_mode", "other_mode"),
-    [("positive", "negative"), ("negative", "positive")],
+    ("ionization_mode", "instrument_model", "instrument_type", "profile"),
+    [
+        ("positive", "LC-MS QExactive Plus", "Orbitrap", "ORBITRAP"),
+        ("negative", "LCMS – Synapt XS", "QTOF", "QTOF"),
+    ],
+    ids=["qexactive-plus", "synapt-xs-en-dash"],
 )
-def test_features_are_scored_with_the_kde_of_the_runs_ionization_mode(
+def test_a_field_run_takes_its_acquisition_from_its_metadata_row(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     ionization_mode: str,
-    other_mode: str,
+    instrument_model: str,
+    instrument_type: str,
+    profile: str,
 ) -> None:
     mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
-    csv_path = _write_csv(tmp_path)
+    csv_path = _write_csv(
+        tmp_path,
+        ACQUISITION_CSV.format(
+            ionization_mode=ionization_mode, instrument_model=instrument_model
+        ),
+    )
+    fake = _fake_sirius_for()
+    _patch_seams(monkeypatch, fake=fake)
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_kde_model(db_path, tmp_path / "kde.pkl")
+
+    result = _invoke(config_path, mzml_dir, csv_path)
+
+    assert result.exit_code == 0, result.output
+    assert [call.formula_id_params.profile.value for call in fake.run_calls] == [
+        profile
+    ]
+    with _open_db(db_path) as session:
+        [run] = session.scalars(select(SiriusRun)).all()
+        assert (run.ionization_mode, run.instrument_type) == (
+            ionization_mode,
+            instrument_type,
+        )
+
+
+def test_one_batch_scores_each_files_features_with_its_own_modes_kde(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML", "EX-002.mzML"])
+    csv_path = _write_csv(
+        tmp_path,
+        "sample_id,filename,taxon_scientific_name,ionization_mode,instrument_model\n"
+        "EX-001,EX-001.mzML,Panthera leo,positive,LC-MS QExactive Plus\n"
+        "EX-002,EX-002.mzML,Panthera tigris,negative,LC-MS QExactive Plus\n",
+    )
     _patch_seams(monkeypatch, fake=_fake_sirius_for())
 
     db_path = tmp_path / "db" / "database.duckdb"
     config_path = _write_config(tmp_path, db_path)
     kdes = {"positive": _fitted(_KDE_POINTS), "negative": _fitted(_OTHER_KDE_POINTS)}
-    kde_model_id = _seed_kde_artifact(db_path, tmp_path / "kde.pkl", kdes)
+    _seed_kde_artifact(db_path, tmp_path / "kde.pkl", kdes)
 
-    result = _invoke(config_path, mzml_dir, csv_path, ionization_mode=ionization_mode)
+    result = _invoke(config_path, mzml_dir, csv_path)
 
     assert result.exit_code == 0, result.output
     # `_fake_sirius_for`'s one Feature: ion mass 151.0, CSI:FingerID score -100.
     point = (151.0, -100.0)
+    expected = {mode: float(kde.pdf(point)[0]) for mode, kde in kdes.items()}
+    assert expected["positive"] != pytest.approx(expected["negative"])
     with _open_db(db_path) as session:
-        [score] = session.scalars(
-            select(CalibrationScore).where(
-                CalibrationScore.kde_model_id == kde_model_id
+        scored = session.execute(
+            select(Extract.sample_id, SiriusRun.ionization_mode, CalibrationScore.score)
+            .select_from(Extract)
+            .join(SiriusRun, SiriusRun.extract_id == Extract.extract_id)
+            .join(Feature, Feature.run_id == SiriusRun.run_id)
+            .join(Annotation, Annotation.feature_id == Feature.feature_id)
+            .join(
+                CalibrationScore,
+                CalibrationScore.annotation_id == Annotation.annotation_id,
             )
+            .order_by(Extract.sample_id)
         ).all()
-    assert score.score == pytest.approx(float(kdes[ionization_mode].pdf(point)[0]))
-    assert score.score != pytest.approx(float(kdes[other_mode].pdf(point)[0]))
+    assert [(sample_id, mode) for sample_id, mode, _ in scored] == [
+        ("EX-001", "positive"),
+        ("EX-002", "negative"),
+    ]
+    assert [score for *_, score in scored] == pytest.approx(
+        [expected["positive"], expected["negative"]]
+    )
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [("--ionization-mode", "positive"), ("--instrument-type", "Orbitrap")],
+)
+def test_per_batch_acquisition_flags_are_no_longer_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: str, value: str
+) -> None:
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
+    csv_path = _write_csv(tmp_path)
+    fake = _fake_sirius_for()
+    _patch_seams(monkeypatch, fake=fake)
+    config_path = _write_config(tmp_path, tmp_path / "database.duckdb")
+
+    result = _invoke(config_path, mzml_dir, csv_path, flag, value)
+
+    assert result.exit_code == 2
+    assert flag in result.output
+    assert fake.run_calls == []
+
+
+@pytest.mark.parametrize(
+    ("ionization_mode", "instrument_model", "named_value"),
+    [
+        ("", "LC-MS QExactive Plus", "'ionization_mode'"),
+        ("Positive", "LC-MS QExactive Plus", "'Positive'"),
+        ("pos", "LC-MS QExactive Plus", "'pos'"),
+        ("positive", "", "'instrument_model'"),
+        ("positive", "Orbitrap Astral", "'Orbitrap Astral'"),
+    ],
+    ids=[
+        "blank-mode",
+        "mode-not-exact",
+        "mode-abbreviated",
+        "blank-instrument-model",
+        "unknown-instrument-model",
+    ],
+)
+def test_an_invalid_acquisition_value_fails_naming_the_file_before_sirius(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ionization_mode: str,
+    instrument_model: str,
+    named_value: str,
+) -> None:
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
+    csv_path = _write_csv(
+        tmp_path,
+        ACQUISITION_CSV.format(
+            ionization_mode=ionization_mode, instrument_model=instrument_model
+        ),
+    )
+    fake = _fake_sirius_for()
+    _patch_seams(monkeypatch, fake=fake)
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_kde_model(db_path, tmp_path / "kde.pkl")
+
+    result = _invoke(config_path, mzml_dir, csv_path)
+
+    assert result.exit_code == 1, result.output
+    assert "Traceback" not in result.output
+    assert "EX-001.mzML" in result.output
+    assert named_value in result.output
+    assert fake.create_project_calls == []
+    assert fake.run_calls == []
+
+
+@pytest.mark.parametrize(
+    ("csv_text", "column"),
+    [
+        (
+            (
+                "sample_id,filename,taxon_scientific_name,instrument_model\n"
+                "EX-001,EX-001.mzML,Panthera leo,LC-MS QExactive Plus\n"
+            ),
+            "ionization_mode",
+        ),
+        (
+            (
+                "sample_id,filename,taxon_scientific_name,ionization_mode\n"
+                "EX-001,EX-001.mzML,Panthera leo,positive\n"
+            ),
+            "instrument_model",
+        ),
+    ],
+    ids=["no-ionization-mode-column", "no-instrument-model-column"],
+)
+def test_a_metadata_table_without_an_acquisition_column_fails_naming_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, csv_text: str, column: str
+) -> None:
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
+    csv_path = _write_csv(tmp_path, csv_text)
+    fake = _fake_sirius_for()
+    _patch_seams(monkeypatch, fake=fake)
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_kde_model(db_path, tmp_path / "kde.pkl")
+
+    result = _invoke(config_path, mzml_dir, csv_path)
+
+    assert result.exit_code == 1, result.output
+    assert "EX-001.mzML" in result.output
+    assert f"'{column}'" in result.output
+    assert fake.run_calls == []
+
+
+def test_acquisition_columns_are_not_copied_into_the_extracts_extra_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
+    csv_path = _write_csv(
+        tmp_path,
+        "sample_id,filename,taxon_scientific_name,collector,ionization_mode,instrument_model\n"
+        "EX-001,EX-001.mzML,Panthera leo,field team A,negative,LCMS – Synapt XS\n",
+    )
+    _patch_seams(monkeypatch, fake=_fake_sirius_for())
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_kde_model(db_path, tmp_path / "kde.pkl")
+
+    result = _invoke(config_path, mzml_dir, csv_path)
+
+    assert result.exit_code == 0, result.output
+    with _open_db(db_path) as session:
+        extract = session.scalars(select(Extract)).one()
+        assert extract.extra_metadata == {"collector": "field team A"}
 
 
 @pytest.mark.parametrize(
@@ -543,10 +723,6 @@ def test_db_flag_overrides_the_config_files_db_path(
             str(mzml_dir),
             "--metadata-csv",
             str(csv_path),
-            "--ionization-mode",
-            "positive",
-            "--instrument-type",
-            "Orbitrap",
         ],
     )
 
@@ -857,8 +1033,6 @@ kde_output_path = "unused-smoke-model.pkl"
 spectra_per_ionization_mode = 2
 mzml_dir = "{mzml_dir}"
 metadata_csv = "{metadata_csv}"
-ionization_mode = "negative"
-instrument_type = "QTOF"
 export_path = "{export_path}"
 """
 
@@ -866,12 +1040,19 @@ export_path = "{export_path}"
 def _write_smoke_setup(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     """A config whose `[smoke_test]` points at its own mzML dir, CSV, DB, and export.
 
+    The smoke metadata table names a negative-mode Synapt XS acquisition, so
+    a run recorded as (negative, QTOF) can only have taken both from it.
     Returns `(config_path, db_path, smoke_db_path, smoke_export_path)`.
     """
     smoke_dir = tmp_path / "smoke"
     smoke_dir.mkdir()
     mzml_dir = _write_mzml_dir(smoke_dir, ["EX-001.mzML"])
-    csv_path = _write_csv(smoke_dir)
+    csv_path = _write_csv(
+        smoke_dir,
+        ACQUISITION_CSV.format(
+            ionization_mode="negative", instrument_model="LCMS – Synapt XS"
+        ),
+    )
     db_path = tmp_path / "database.duckdb"
     smoke_db_path = smoke_dir / "database.duckdb"
     smoke_export_path = smoke_dir / "feature_probabilities.csv"

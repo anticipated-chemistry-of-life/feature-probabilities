@@ -5,8 +5,9 @@ Instrument type). `resolve_instrument_type` turns a raw value (e.g. a ground
 truth `instrument_type` or an instrument model such as
 `LC-MS QExactive Plus`) into an Instrument type;
 `analysis_params_for_instrument_type` builds the SIRIUS analysis parameters
-for one. `generate-groundtruth` builds every chunk's parameters this way;
-`annotate` does not yet, so field runs still get SIRIUS's default profile.
+for one. `generate-groundtruth` builds every chunk's parameters this way,
+and `annotate` every field run's, from the Instrument type its metadata
+row's `instrument_model` resolves to (`metadata.read_acquisition`).
 """
 
 from __future__ import annotations

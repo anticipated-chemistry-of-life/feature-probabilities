@@ -40,7 +40,7 @@ surface:
 - ``--export <path>`` writes the batch's feature-probability table -- one
   row per feature-structure-candidate pair from every successfully
   processed file, with its calibration score -- to CSV or Parquet
-  (selected by ``<path>``'s suffix): the literal deliverable `CONTEXT.md`'s
+  (selected by ``<path>``'s suffix): the literal deliverable GLOSSARY.md's
   Feature-probability table entry names.
 - SIRIUS is shut down after every mzML file (success or failure) and the
   next file that needs it starts a fresh instance (`Sirius.shutdown`).
@@ -51,21 +51,25 @@ surface:
   persisted, per SIRIUS's default and the STAR protocol
   (``sirius_protocol/STAR_Protocol_PySirius.md``, step 10).
 - Each analysed feature keeps only its ``config.sirius.top_k`` best-ranked
-  structure candidates (CONTEXT.md's Top-k), the same k
+  structure candidates (GLOSSARY.md's Top-k), the same k
   ``generate-groundtruth`` applies, so the calibration score is only
   applied to the candidate population it was fitted on.
 - ``--smoke-test`` annotates into the config's ``[smoke_test]`` database,
-  taking ``--mzml-dir``, ``--metadata-csv``, ``--ionization-mode``,
-  ``--instrument-type`` and ``--export`` from ``[smoke_test]`` unless
-  passed explicitly (the four inputs are otherwise required). It rejects
-  ``--db``.
+  taking ``--mzml-dir``, ``--metadata-csv`` and ``--export`` from
+  ``[smoke_test]`` unless passed explicitly (the two inputs are otherwise
+  required). It rejects ``--db``.
 
-``ionization_mode``/``instrument_type`` are per-batch CLI flags rather than
-metadata-CSV columns: per ``GLOSSARY.md``'s Extract entry, they're
-acquisition-specific detail that lives on the SIRIUS run, not the physical
-sample -- the metadata CSV (#17) only ever upserts ``species``/``extracts``
-rows. The Ionization mode recorded on a field run selects the KDE that
-scores its Features.
+Each mzML's Ionization mode and Instrument type come from its own metadata
+row (`metadata.read_acquisition`), so one batch can mix polarities and
+instruments: the required ``ionization_mode`` column (exactly ``positive``
+or ``negative``), and the required ``instrument_model`` column, resolved to
+an Instrument type through the shared `instrument` resolver. Both are
+recorded on the file's SIRIUS run, never on its Extract (GLOSSARY.md's
+Extract entry). The Instrument type selects the SIRIUS profile the file is
+analysed under (`instrument.analysis_params_for_instrument_type`); the
+Ionization mode selects the KDE that scores its Features. A missing or
+invalid value raises a `MetadataError` naming the file before that file
+reaches SIRIUS, aborting the run just as a missing metadata row does.
 """
 
 from __future__ import annotations
@@ -94,11 +98,12 @@ from feature_probabilities.config import (
     for_smoke_test,
     load_config,
 )
-from feature_probabilities.kde import IONIZATION_MODES
+from feature_probabilities.instrument import analysis_params_for_instrument_type
 from feature_probabilities.metadata import (
     MetadataError,
     find_metadata_row_for_mzml,
     load_metadata_csv,
+    read_acquisition,
     upsert_metadata_row,
 )
 from feature_probabilities.run_cache import (
@@ -124,7 +129,6 @@ from feature_probabilities.sirius import (
     SiriusStartupError,
     SiriusVersionMismatchError,
     SiriusVersionUnavailableError,
-    job_submission_from_config,
     require_matching_sirius_version,
 )
 
@@ -350,8 +354,6 @@ def annotate_batch(
     mzml_dir: Path,
     metadata_csv: Path,
     work_dir: Path,
-    ionization_mode: str,
-    instrument_type: str,
     kde_model_path: Path | None = None,
     force: bool = False,
     export_path: Path | None = None,
@@ -362,14 +364,16 @@ def annotate_batch(
     Resolves the `kde_models` row to apply (`_resolve_kde_model`) and loads
     its per-Ionization-mode KDEs once, up front. For each mzML file
     (processed in sorted-by-name order): looks up its metadata row by the
-    table's `filename` column (`find_metadata_row_for_mzml`), upserts the
-    corresponding `species`/`extracts` rows (`upsert_metadata_row`), runs it
-    through `run_cache.get_or_create_run` with `source_kind='field_mzml'`,
-    `force=force`, the just-upserted row's `extract_id`, `ionization_mode`,
-    and `config.sirius.import_params`/`analysis_params` (with
-    `JobSubmission.recompute` also set from `force`), then scores every one
-    of its annotations (`apply_calibration`) with the resolved model's KDE
-    for `ionization_mode`.
+    table's `filename` column (`find_metadata_row_for_mzml`), reads its
+    Ionization mode and Instrument type from that row (`read_acquisition`),
+    upserts the corresponding `species`/`extracts` rows
+    (`upsert_metadata_row`), runs it through `run_cache.get_or_create_run`
+    with `source_kind='field_mzml'`, `force=force`, the just-upserted row's
+    `extract_id`, both acquisition values, `config.sirius.import_params`, and
+    `config.sirius.analysis_params` under the Instrument type's SIRIUS
+    profile (with `JobSubmission.recompute` also set from `force`), then
+    scores every one of its annotations (`apply_calibration`) with the
+    resolved model's KDE for that Ionization mode.
 
     `commit`s `session` after every file -- on success, so an earlier
     file's work survives a later file's failure; on failure, `rollback`s
@@ -377,8 +381,9 @@ def annotate_batch(
     rather than aborting the whole batch. Either way `sirius` is shut down
     after the file, freeing the heap SIRIUS never releases on its own. Only
     errors raised *before* any file is processed (SIRIUS version mismatch,
-    an unresolvable `--kde-model` or incomplete KDE artifact, a missing
-    metadata row) or by a shutdown propagate out of this function.
+    an unresolvable `--kde-model` or incomplete KDE artifact), a file's
+    missing metadata row or invalid acquisition value, or a shutdown
+    propagate out of this function.
     If `export_path` is given, writes the feature-probability table for
     every successfully processed file once the batch finishes.
     `fit_kde_command` is the command a missing-KDE error tells the operator
@@ -392,7 +397,8 @@ def annotate_batch(
         AnnotateError: `mzml_dir` doesn't exist or isn't a directory, or
             `export_path`'s extension is unsupported.
         MetadataError: `metadata_csv` is malformed, or an mzML file has no
-            matching metadata row.
+            matching metadata row, or its row lacks a valid
+            `ionization_mode` or a known `instrument_model`.
         SiriusShutdownError: SIRIUS didn't exit after a file.
     """
     require_matching_sirius_version(sirius, config.required_sirius_version)
@@ -413,9 +419,6 @@ def annotate_batch(
     metadata_df = load_metadata_csv(metadata_csv)
 
     import_params = LcmsSubmissionParameters(**config.sirius.import_params)
-    analysis_params = job_submission_from_config(
-        config.sirius.analysis_params, recompute=force
-    )
 
     files_processed = 0
     cache_hits = 0
@@ -426,6 +429,7 @@ def annotate_batch(
     failures: list[FileFailure] = []
     for mzml_path in mzml_paths:
         row = find_metadata_row_for_mzml(metadata_df, mzml_path)
+        acquisition = read_acquisition(row, mzml_path)
         extract = upsert_metadata_row(session, row, csv_path=metadata_csv)
 
         request = SiriusRunRequest(
@@ -434,11 +438,15 @@ def annotate_batch(
             source_kind=SOURCE_KIND_FIELD_MZML,
             extract_id=extract.extract_id,
             import_params=import_params,
-            analysis_params=analysis_params,
+            analysis_params=analysis_params_for_instrument_type(
+                config.sirius.analysis_params,
+                acquisition.instrument_type,
+                recompute=force,
+            ),
             sirius_version=config.required_sirius_version,
             pysirius_client_version=PySirius.__version__,
-            ionization_mode=ionization_mode,
-            instrument_type=instrument_type,
+            ionization_mode=acquisition.ionization_mode,
+            instrument_type=acquisition.instrument_type,
             annotated_qualities=ANNOTATED_QUALITIES,
             top_k=config.sirius.top_k,
         )
@@ -508,34 +516,24 @@ def _format_summary(summary: AnnotateSummary) -> str:
 
 
 def _required_inputs(
-    mzml_dir: Path | None,
-    metadata_csv: Path | None,
-    ionization_mode: str | None,
-    instrument_type: str | None,
-) -> tuple[Path, Path, str, str]:
-    """The batch's four input options, or a usage error naming every missing one.
+    mzml_dir: Path | None, metadata_csv: Path | None
+) -> tuple[Path, Path]:
+    """The batch's two input options, or a usage error naming every missing one.
 
     Raises:
-        click.UsageError: any of the four is `None`.
+        click.UsageError: either is `None`.
     """
-    if (
-        mzml_dir is None
-        or metadata_csv is None
-        or ionization_mode is None
-        or instrument_type is None
-    ):
+    if mzml_dir is None or metadata_csv is None:
         missing = [
             option
             for option, value in (
                 ("--mzml-dir", mzml_dir),
                 ("--metadata-csv", metadata_csv),
-                ("--ionization-mode", ionization_mode),
-                ("--instrument-type", instrument_type),
             )
             if value is None
         ]
         raise click.UsageError(f"Missing option(s): {', '.join(missing)}.")
-    return mzml_dir, metadata_csv, ionization_mode, instrument_type
+    return mzml_dir, metadata_csv
 
 
 @click.command()
@@ -566,29 +564,9 @@ def _required_inputs(
     type=click.Path(path_type=Path),
     required=False,
     help=(
-        "CSV (or tab-separated .tsv) of species/extract metadata to upsert, "
-        "keyed by sample_id (--smoke-test default: config)."
-    ),
-)
-@click.option(
-    "--ionization-mode",
-    "ionization_mode",
-    type=click.Choice(IONIZATION_MODES),
-    required=False,
-    help=(
-        "Ionization mode recorded on every new SIRIUS run in this batch; a "
-        "run's recorded mode selects the KDE that scores its Features "
-        "(--smoke-test default: config)."
-    ),
-)
-@click.option(
-    "--instrument-type",
-    "instrument_type",
-    type=str,
-    required=False,
-    help=(
-        "Instrument type SIRIUS should record for every run in this batch "
-        "(e.g. Orbitrap, QTOF; --smoke-test default: config)."
+        "CSV (or tab-separated .tsv) with one row per mzML: species/extract "
+        "metadata to upsert, keyed by sample_id, plus the file's "
+        "ionization_mode and instrument_model (--smoke-test default: config)."
     ),
 )
 @click.option(
@@ -635,8 +613,6 @@ def main(
     db_path: str | None,
     mzml_dir: Path | None,
     metadata_csv: Path | None,
-    ionization_mode: str | None,
-    instrument_type: str | None,
     kde_model_path: Path | None,
     force: bool,
     export_path: Path | None,
@@ -648,7 +624,7 @@ def main(
     if not smoke_test:
         # Fail on a missing input before touching the config; --smoke-test
         # can only fill its defaults in once the config is loaded.
-        _required_inputs(mzml_dir, metadata_csv, ionization_mode, instrument_type)
+        _required_inputs(mzml_dir, metadata_csv)
     try:
         config = load_config(
             config_path if config_path is not None else DEFAULT_CONFIG_PATH,
@@ -659,13 +635,9 @@ def main(
             config, smoke_test_config = for_smoke_test(config)
             mzml_dir = mzml_dir or Path(smoke_test_config.mzml_dir)
             metadata_csv = metadata_csv or Path(smoke_test_config.metadata_csv)
-            ionization_mode = ionization_mode or smoke_test_config.ionization_mode
-            instrument_type = instrument_type or smoke_test_config.instrument_type
             export_path = export_path or Path(smoke_test_config.export_path)
             fit_kde_command = "fit-kde --smoke-test"
-        mzml_dir, metadata_csv, ionization_mode, instrument_type = _required_inputs(
-            mzml_dir, metadata_csv, ionization_mode, instrument_type
-        )
+        mzml_dir, metadata_csv = _required_inputs(mzml_dir, metadata_csv)
         engine = create_database(config.db_path)
         try:
             sirius = Sirius(headless=True)
@@ -681,8 +653,6 @@ def main(
                         mzml_dir=mzml_dir,
                         metadata_csv=metadata_csv,
                         work_dir=Path(tmp),
-                        ionization_mode=ionization_mode,
-                        instrument_type=instrument_type,
                         kde_model_path=kde_model_path,
                         force=force,
                         export_path=export_path,

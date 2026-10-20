@@ -1,10 +1,11 @@
-"""Species/extract metadata upsert from a user-supplied CSV or TSV.
+"""Species/extract metadata upsert, and per-file acquisition, from a user-supplied CSV or TSV.
 
 `annotate` always requires and upserts a metadata CSV on every invocation
 (issue #9's user story 17) rather than needing a separate one-time ingestion
 step -- there is no dedicated ingestion executable (issue #9's Out of Scope).
-This module is standalone from SIRIUS entirely: it only touches the
-`species`/`extracts` tables (`schema.py`) via a real SQLAlchemy `Session`.
+This module never talks to SIRIUS: it only touches the `species`/`extracts`
+tables (`schema.py`) via a real SQLAlchemy `Session`, and resolves each
+mzML's acquisition through the pure `instrument` resolver.
 
 The table is comma-separated, or tab-separated when its filename ends in
 `.tsv` (case-insensitive). Its columns map onto the two tables as follows:
@@ -14,6 +15,12 @@ The table is comma-separated, or tab-separated when its filename ends in
 - `filename` (required by `annotate`) -- the mzML file this row describes,
   matched against each input mzML by stem (see `find_metadata_row_for_mzml`).
   Not stored: it identifies a file, not an extract.
+- `ionization_mode`, `instrument_model` (required by `annotate`) -- the
+  mzML's Ionization mode and the instrument model its Instrument type is
+  resolved from (see `read_acquisition`). Not stored on the Extract: they
+  describe one acquisition, which lives on its SIRIUS run (GLOSSARY.md's
+  Extract), so one Extract can be acquired in both modes or on several
+  instruments.
 - `taxon_scientific_name` (required) -- `species.taxon_scientific_name`, the species upsert key.
 - `ncbi_taxid`, `family` (optional) -- the rest of `species`.
 - `organ` (optional) -- `extracts.organ`.
@@ -23,29 +30,49 @@ The table is comma-separated, or tab-separated when its filename ends in
 
 Two entry points cover the two ways later tickets consume this module:
 `upsert_metadata_csv` upserts every row in one pass (this ticket's own
-acceptance criteria), and `find_metadata_row_for_mzml` +
-`upsert_metadata_row` together let `annotate` (#23) look up and upsert
-just the one row a given mzML file needs.
+acceptance criteria), and `find_metadata_row_for_mzml` + `read_acquisition`
++ `upsert_metadata_row` together let `annotate` (#23) look up, validate,
+and upsert just the one row a given mzML file needs.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
 from sqlalchemy import select
 
+from feature_probabilities.instrument import (
+    UnknownInstrumentError,
+    resolve_instrument_type,
+)
+from feature_probabilities.kde import IONIZATION_MODES
 from feature_probabilities.schema import Extract, Species
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+    from feature_probabilities.instrument import InstrumentType
 
 #: The upsert key column, `extracts.sample_id`.
 SAMPLE_ID_COLUMN = "sample_id"
 
 #: The column naming the mzML file a row describes; `annotate`'s lookup key.
 FILENAME_COLUMN = "filename"
+
+#: The column naming an mzML's Ionization mode: exactly `positive` or
+#: `negative`.
+IONIZATION_MODE_COLUMN = "ionization_mode"
+
+#: The column naming an mzML's instrument model, e.g. `LC-MS QExactive Plus`,
+#: resolved to its Instrument type through the shared instrument resolver.
+INSTRUMENT_MODEL_COLUMN = "instrument_model"
+
+#: Columns describing one mzML's acquisition, which `annotate` requires and
+#: records on the SIRIUS run rather than the Extract.
+ACQUISITION_COLUMNS = (IONIZATION_MODE_COLUMN, INSTRUMENT_MODEL_COLUMN)
 
 #: Columns that map directly onto `species` columns (besides the species
 #: upsert key, `taxon_scientific_name`, which is also required -- see `REQUIRED_COLUMNS`).
@@ -60,6 +87,7 @@ EXTRACT_COLUMNS = ("organ",)
 PINNED_COLUMNS = (
     SAMPLE_ID_COLUMN,
     FILENAME_COLUMN,
+    *ACQUISITION_COLUMNS,
     *SPECIES_COLUMNS,
     *EXTRACT_COLUMNS,
 )
@@ -171,6 +199,73 @@ def find_metadata_row_for_mzml(
             f"{str(mzml_filename)!r}"
         )
     return df.loc[matches[0]]
+
+
+@dataclass(frozen=True, slots=True)
+class Acquisition:
+    """How one mzML was acquired, as its SIRIUS run records it."""
+
+    ionization_mode: str
+    instrument_type: InstrumentType
+
+
+def _required_acquisition_value(
+    row: pd.Series, column: str, *, mzml_name: str, expected: str
+) -> str:
+    if column not in row.index:
+        raise MetadataError(
+            f"Metadata table has no '{column}' column, needed for mzML file "
+            f"{mzml_name!r}"
+        )
+    value = _clean(row[column])
+    if value is None:
+        raise MetadataError(
+            f"Metadata row for mzML file {mzml_name!r} has no '{column}' value "
+            f"(expected {expected})"
+        )
+    return value
+
+
+def read_acquisition(row: pd.Series, mzml_filename: str | Path) -> Acquisition:
+    """The Ionization mode and Instrument type `row` gives the mzML `mzml_filename`.
+
+    `row` is the mzML's metadata row (`find_metadata_row_for_mzml`). Values
+    are stripped like every other cell; `ionization_mode` must then be
+    exactly `positive` or `negative`, and `instrument_model` must resolve
+    through `instrument.resolve_instrument_type`.
+
+    Raises:
+        MetadataError: the table lacks either column, or `row`'s
+            `ionization_mode` is blank or not exactly `positive`/`negative`,
+            or its `instrument_model` is blank or names no known Instrument
+            type. The message names `mzml_filename`, and the raw value when
+            there is one.
+    """
+    mzml_name = Path(mzml_filename).name
+    expected_modes = " or ".join(repr(mode) for mode in IONIZATION_MODES)
+    ionization_mode = _required_acquisition_value(
+        row, IONIZATION_MODE_COLUMN, mzml_name=mzml_name, expected=expected_modes
+    )
+    if ionization_mode not in IONIZATION_MODES:
+        raise MetadataError(
+            f"Metadata row for mzML file {mzml_name!r} has "
+            f"{IONIZATION_MODE_COLUMN} {ionization_mode!r} (expected exactly "
+            f"{expected_modes})"
+        )
+    instrument_model = _required_acquisition_value(
+        row,
+        INSTRUMENT_MODEL_COLUMN,
+        mzml_name=mzml_name,
+        expected="an instrument model, e.g. 'LC-MS QExactive Plus'",
+    )
+    try:
+        instrument_type = resolve_instrument_type(instrument_model)
+    except UnknownInstrumentError as exc:
+        raise MetadataError(
+            f"Metadata row for mzML file {mzml_name!r} has "
+            f"{INSTRUMENT_MODEL_COLUMN} {instrument_model!r}: {exc}"
+        ) from exc
+    return Acquisition(ionization_mode=ionization_mode, instrument_type=instrument_type)
 
 
 def _get_or_create[T: (Species, Extract)](

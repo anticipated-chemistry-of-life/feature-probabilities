@@ -136,8 +136,6 @@ kde_output_path = "models/smoke_test/kde_model.pkl"
 spectra_per_ionization_mode = {value}
 mzml_dir = "data/smoke_test"
 metadata_csv = "data/smoke_test/metadata.tsv"
-ionization_mode = "positive"
-instrument_type = "Orbitrap"
 export_path = "db/smoke_test/feature_probabilities.csv"
 """
 

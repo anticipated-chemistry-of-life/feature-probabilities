@@ -42,8 +42,6 @@ _SMOKE_TEST_STRING_KEYS = (
     "kde_output_path",
     "mzml_dir",
     "metadata_csv",
-    "ionization_mode",
-    "instrument_type",
     "export_path",
 )
 
@@ -81,7 +79,9 @@ class SmokeTestConfig:
     ``db_path``/``kde_output_path`` replace the top-level ones (see
     :func:`for_smoke_test`); ``spectra_per_ionization_mode`` caps
     ``generate-groundtruth``'s Ground truth set; the rest are ``annotate``'s
-    defaults for its otherwise-required inputs and its export.
+    defaults for its otherwise-required inputs and its export. Each smoke
+    mzML's Ionization mode and Instrument type come from the smoke metadata
+    table, as in any ``annotate`` batch.
     """
 
     db_path: str
@@ -89,8 +89,6 @@ class SmokeTestConfig:
     spectra_per_ionization_mode: int
     mzml_dir: str
     metadata_csv: str
-    ionization_mode: str
-    instrument_type: str
     export_path: str
 
 

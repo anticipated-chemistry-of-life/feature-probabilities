@@ -80,10 +80,30 @@ calibration, and there is no fallback KDE (ADR 0002). If either mode has no
 correct assignments, `fit-kde` fails and names that mode.
 
 `annotate` scores each field run's Features with the KDE for the Ionization
-mode recorded on that run, which comes from `--ionization-mode` when the run
-is created. A KDE artifact missing either mode, such as one fitted before
-per-mode calibration, is rejected before any mzML reaches SIRIUS; rerun
-`fit-kde`.
+mode recorded on that run. A KDE artifact missing either mode, such as one
+fitted before per-mode calibration, is rejected before any mzML reaches
+SIRIUS; rerun `fit-kde`.
+
+## Annotate
+
+`annotate` reads each mzML's Ionization mode and Instrument type from that
+file's row in the metadata table (`--metadata-csv`), so one batch can mix
+polarities and instruments. Two columns are required:
+
+- `ionization_mode`: exactly `positive` or `negative`.
+- `instrument_model`: the instrument product name, e.g.
+  `LC-MS QExactive Plus`. It resolves to an Instrument type, `Orbitrap` or
+  `QTOF`, after normalization (lowercased, ASCII letters and digits only), so
+  `LCMS – Synapt XS` resolves to `QTOF`. The mapping table is
+  `_INSTRUMENT_TYPE_BY_NORMALIZED_VALUE` in `instrument.py`; an unknown model
+  needs a line added there.
+
+Each field run records both values, is analysed under its Instrument type's
+SIRIUS profile, and is scored with the KDE for its Ionization mode. Neither
+column is copied into the Extract's extra metadata. A missing column, a
+blank or invalid `ionization_mode`, or an `instrument_model` with no known
+Instrument type fails the run with an error naming the file, just like an
+mzML with no metadata row.
 
 ## Smoke test
 
