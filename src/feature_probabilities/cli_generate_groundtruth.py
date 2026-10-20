@@ -49,15 +49,12 @@ from __future__ import annotations
 
 import tempfile
 from collections import Counter
-from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
 import PySirius
-from PySirius import JobSubmission
-from PySirius.models.instrument_profile import InstrumentProfile
 from sqlalchemy.orm import Session
 
 from feature_probabilities.config import (
@@ -66,6 +63,11 @@ from feature_probabilities.config import (
     ConfigError,
     for_smoke_test,
     load_config,
+)
+from feature_probabilities.instrument import (
+    UnknownInstrumentError,
+    analysis_params_for_instrument_type,
+    resolve_instrument_type,
 )
 from feature_probabilities.massspecgym import (
     UNKNOWN_INSTRUMENT_TYPE,
@@ -92,7 +94,6 @@ from feature_probabilities.sirius import (
     SiriusStartupError,
     SiriusVersionMismatchError,
     SiriusVersionUnavailableError,
-    job_submission_from_config,
     require_matching_sirius_version,
 )
 
@@ -121,6 +122,7 @@ _CLICK_EXCEPTION_ERRORS = (
     SiriusStartupError,
     SiriusVersionMismatchError,
     SiriusVersionUnavailableError,
+    UnknownInstrumentError,
 )
 
 
@@ -147,51 +149,12 @@ class GroundtruthSummary:
     features_seen: int
     annotations_seen: int
     #: Spectra dropped before chunking because MassSpecGym left their
-    #: `instrument_type` blank, so no `InstrumentProfile` can be justified
-    #: for them (`_analysis_params`). Reported rather than silently
-    #: discarded: 5,223 of the pinned revision's 231,104 rows are blank.
+    #: `instrument_type` blank, so no Instrument type, and hence no SIRIUS
+    #: instrument profile, can be resolved for them. Reported rather than
+    #: silently discarded: 5,223 of the pinned revision's 231,104 rows are
+    #: blank.
     spectra_skipped: int = 0
     failures: tuple[ChunkFailure, ...] = ()
-
-
-#: `instrument_type` -> the SIRIUS `AlgorithmProfile` its spectra must be
-#: analysed under. Total over the instrument types this pipeline processes,
-#: since blank-`instrument_type` spectra are skipped before chunking.
-_INSTRUMENT_PROFILES = {
-    "QTOF": InstrumentProfile.QTOF,
-    "Orbitrap": InstrumentProfile.ORBITRAP,
-}
-
-
-def _analysis_params(
-    config: Config, *, instrument_type: str, force: bool
-) -> JobSubmission:
-    """The config's analysis parameters, profiled for `instrument_type`.
-
-    `config.toml` deliberately carries no `formula_id_params.profile`: one
-    global value would be applied to every chunk, silently analysing
-    Orbitrap spectra under a QTOF mass-accuracy model (or vice versa) on any
-    `--instrument-type all` run. The profile is therefore derived here from
-    the chunk's own instrument type, which also makes the two instrument
-    types' `analysis_params_checksum`s differ -- correct, since those runs
-    are not interchangeable.
-
-    Raises:
-        RunCacheError: `instrument_type` has no SIRIUS profile. Unreachable
-            via `generate_groundtruth`, which skips such spectra.
-    """
-    profile = _INSTRUMENT_PROFILES.get(instrument_type)
-    if profile is None:
-        raise RunCacheError(
-            f"No SIRIUS instrument profile for instrument type "
-            f"{instrument_type!r}; expected one of "
-            f"{sorted(_INSTRUMENT_PROFILES)}."
-        )
-    params = deepcopy(config.sirius.analysis_params)
-    formula_id_params = dict(params.get("formula_id_params") or {})
-    formula_id_params["profile"] = profile.value
-    params["formula_id_params"] = formula_id_params
-    return job_submission_from_config(params, recompute=force)
 
 
 def _true_inchikey_by_identifier(spectra: Sequence[Spectrum]) -> dict[str, str]:
@@ -250,14 +213,16 @@ def generate_groundtruth(
     than aborting the whole run. Either way `sirius` is shut down after the
     chunk, freeing the heap SIRIUS never releases on its own. Only errors
     raised *before* any chunk is processed (SIRIUS version mismatch,
-    MassSpecGym fetch/parse failure) or by a shutdown propagate out of this
-    function.
+    MassSpecGym fetch/parse failure, an unknown instrument) or by a shutdown
+    propagate out of this function.
 
     Raises:
         SiriusVersionMismatchError: the installed SIRIUS version doesn't
             match `config.required_sirius_version`.
         MassSpecGymFetchError: MassSpecGym couldn't be fetched.
         MassSpecGymParseError: MassSpecGym's TSV is malformed.
+        UnknownInstrumentError: a non-blank `instrument_type` names no
+            Instrument type.
         SiriusShutdownError: SIRIUS didn't exit after a chunk.
     """
     require_matching_sirius_version(sirius, config.required_sirius_version)
@@ -281,16 +246,25 @@ def generate_groundtruth(
         spectra = _first_per_instrument_type(spectra, spectra_per_instrument_type)
 
     true_inchikey_by_identifier = _true_inchikey_by_identifier(spectra)
-    chunk_paths_by_instrument_type = write_sirius_chunks(spectra, work_dir / "chunks")
+    # Resolved before any chunk reaches SIRIUS, so an unknown instrument
+    # fails the whole run rather than after earlier chunks were analysed. A
+    # list of pairs, not a dict: two raw spellings may share an Instrument
+    # type.
+    chunk_groups = [
+        (resolve_instrument_type(raw_instrument_value), chunk_paths)
+        for raw_instrument_value, chunk_paths in write_sirius_chunks(
+            spectra, work_dir / "chunks"
+        ).items()
+    ]
 
     chunks_processed = 0
     cache_hits = 0
     features_seen = 0
     annotations_seen = 0
     failures: list[ChunkFailure] = []
-    for chunk_instrument_type, chunk_paths in chunk_paths_by_instrument_type.items():
-        analysis_params = _analysis_params(
-            config, instrument_type=chunk_instrument_type, force=force
+    for chunk_instrument_type, chunk_paths in chunk_groups:
+        analysis_params = analysis_params_for_instrument_type(
+            config.sirius.analysis_params, chunk_instrument_type, recompute=force
         )
         for chunk_path in chunk_paths:
             request = SiriusRunRequest(

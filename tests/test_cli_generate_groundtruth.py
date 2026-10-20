@@ -513,6 +513,77 @@ def test_each_chunk_is_analysed_under_its_own_instrument_profile(
     assert profile_by_instrument_type == {"QTOF": "QTOF", "Orbitrap": "ORBITRAP"}
 
 
+def test_an_instrument_model_is_analysed_under_its_instrument_types_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A product-model spelling resolves to its Instrument type, en dash and all."""
+    tsv_path = _write_tsv(
+        tmp_path, [_row("msg-synapt", instrument_type=" LCMS – Synapt XS ")]
+    )
+    fake = _fake_sirius_for("msg-synapt", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+
+    result = CliRunner().invoke(main, ["--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    assert [call.formula_id_params.profile.value for call in fake.run_calls] == ["QTOF"]
+    with _open_db(db_path) as session:
+        runs = session.scalars(select(SiriusRun)).all()
+        assert [run.instrument_type for run in runs] == ["QTOF"]
+
+
+def test_an_unknown_instrument_fails_the_run_before_any_sirius_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No chunk is analysed under a guessed profile, nor before the failure."""
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-orbitrap", instrument_type="Orbitrap"),
+            _row("msg-astral", instrument_type="LC-MS Astral"),
+        ],
+    )
+    fake = _fake_sirius_for("msg-orbitrap", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+
+    result = CliRunner().invoke(main, ["--config", str(config_path)])
+
+    assert result.exit_code != 0
+    assert "LC-MS Astral" in result.output
+    assert fake.run_calls == []
+
+
+def test_two_instrument_spellings_sharing_a_chunk_name_fail_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both resolve, but one group's chunk file would overwrite the other's."""
+    tsv_path = _write_tsv(
+        tmp_path,
+        [
+            _row("msg-upper", instrument_type="Orbitrap"),
+            _row("msg-lower", instrument_type="orbitrap"),
+        ],
+    )
+    fake = _fake_sirius_for("msg-upper", "AAAAAAAAAAAAAA")
+    _patch_seams(monkeypatch, tsv_path=tsv_path, fake=fake)
+
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+
+    result = CliRunner().invoke(main, ["--config", str(config_path)])
+
+    assert result.exit_code != 0
+    assert "'Orbitrap'" in result.output
+    assert "'orbitrap'" in result.output
+    assert fake.run_calls == []
+
+
 def test_every_chunks_project_is_closed_after_its_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

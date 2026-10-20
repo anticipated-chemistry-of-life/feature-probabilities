@@ -75,9 +75,11 @@ detectable_adducts = [
 ]
 
 # SIRIUS molecular formula identification. `profile` is deliberately absent:
-# the instrument profile is derived per chunk from the chunk's own
-# `instrument_type` (`cli_generate_groundtruth._instrument_profile`), so a
-# value here could only ever disagree with the data it is applied to.
+# the shared builder `instrument.analysis_params_for_instrument_type` injects
+# the profile of a SIRIUS run's own Instrument type (GLOSSARY.md), so a value
+# here could only ever disagree with the data it is applied to.
+# `generate-groundtruth` builds every chunk's parameters through it;
+# `annotate` does not yet, so field runs still get SIRIUS's default profile.
 [sirius.analysis_params.formula_id_params]
 enabled = true
 number_of_candidates = 10

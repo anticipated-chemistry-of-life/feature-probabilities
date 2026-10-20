@@ -410,6 +410,11 @@ def write_sirius_chunks(
     Each written spectrum carries only `_EXPORTED_MGF_FIELDS`: the true
     structure a parsed spectrum holds in memory is never written into a file
     SIRIUS reads.
+
+    Raises:
+        MassSpecGymParseError: two `instrument_type` spellings (e.g.
+            `Orbitrap`, `orbitrap`) share a chunk file name, so one group's
+            chunks would silently overwrite the other's.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     grouped: dict[str, list[Spectrum]] = {}
@@ -418,8 +423,15 @@ def write_sirius_chunks(
         grouped.setdefault(instrument_type, []).append(spectrum)
 
     chunk_paths: dict[str, list[Path]] = {}
+    instrument_type_by_slug: dict[str, str] = {}
     for instrument_type, group in grouped.items():
         slug = _instrument_type_slug(instrument_type)
+        claimed_by = instrument_type_by_slug.setdefault(slug, instrument_type)
+        if claimed_by != instrument_type:
+            raise MassSpecGymParseError(
+                f"instrument_type values {claimed_by!r} and {instrument_type!r} "
+                f"would both be written as chunk {slug!r}; respell one in the TSV."
+            )
         paths: list[Path] = []
         for chunk_number, start in enumerate(range(0, len(group), chunk_size)):
             chunk = group[start : start + chunk_size]
