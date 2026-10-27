@@ -5,7 +5,9 @@ HuggingFace dataset ``salutmoic/msnlib-ms2-parquet`` at an exact revision,
 through the hub cache. :func:`read_ground_truth_set` filters it to the Ground
 truth set and parses every kept row into a :class:`GroundTruthSpectrum`, and
 :func:`write_sirius_chunks` writes those as SIRIUS-ready MGF chunks, one
-group per (Ionization mode, Instrument type).
+group per (Ionization mode, Instrument type). Each spectrum also names the
+raw mzML file and MS2 scans it was merged from, which `msnlib_ms1` uses to
+attach its measured MS1 scan (ADR 0003).
 """
 
 from __future__ import annotations
@@ -53,6 +55,9 @@ MSNLIB_COLUMNS = (
     "ionmode",
     "spectype",
     "other_matched_compounds",
+    "usi",
+    "source_scan_usi",
+    "scans",
 )
 
 #: MSnLib adducts SIRIUS cannot detect: none is among
@@ -72,9 +77,15 @@ _MGF_CHARGE_BY_IONIZATION_MODE = {"positive": "1+", "negative": "1-"}
 #: stereo/isotope block, protonation letter.
 _INCHIKEY = re.compile(r"[A-Z]{14}-[A-Z]{10}-[A-Z]")
 
+#: The raw file of a USI, `mzspec:<dataset>:<raw file>:<scans>`.
+_USI_RAW_FILE = re.compile(r"mzspec:[A-Z0-9]+:([^:\s,\[\]\"]+):")
+
+#: MSnLib's `scans`: comma-separated scan numbers or inclusive ranges.
+_SCANS = re.compile(r"\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*")
+
 
 class MsnlibFetchError(Exception):
-    """Raised when MSnLib's parquet can't be fetched at the requested revision."""
+    """Raised when MSnLib's parquet or raw mzML archives can't be fetched."""
 
 
 class MsnlibParseError(Exception):
@@ -128,6 +139,14 @@ class GroundTruthSpectrum:
     instrument_type: InstrumentType
     #: Exactly what is written to the MGF chunk SIRIUS reads (`_sirius_spectrum`).
     spectrum: Spectrum
+    #: Stem of the raw mzML file the spectrum's MS2 scans were measured in.
+    raw_file: str
+    #: The MS2 scans MSnLib merged into `spectrum`, ascending.
+    scans: tuple[int, ...]
+    #: The measured MS1 scan written before `spectrum`, set by
+    #: `msnlib_ms1.attach_measured_ms1`; `None` when no MS1 scan preceding
+    #: `scans` holds the precursor.
+    ms1: Spectrum | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +256,40 @@ def _require_instrument_type(
         raise MsnlibParseError(f"Row {identifier!r}: {exc}") from exc
 
 
+def _require_raw_file(row: dict[str, object], *, identifier: str) -> str:
+    """The one raw mzML file `row`'s MS2 scans come from.
+
+    `source_scan_usi` names it where present; otherwise `usi` does (for the
+    libraries whose `usi` points at the raw file rather than a library MGF).
+    """
+    column = "usi" if _is_blank(row["source_scan_usi"]) else "source_scan_usi"
+    value = str(_require(row, column, identifier=identifier))
+    raw_files = set(_USI_RAW_FILE.findall(value))
+    if len(raw_files) != 1:
+        raise MsnlibParseError(
+            _malformed(identifier, column, value, "USIs naming exactly one raw file")
+        )
+    return raw_files.pop()
+
+
+def _require_scans(row: dict[str, object], *, identifier: str) -> tuple[int, ...]:
+    """`row`'s MS2 scan numbers, ascending, from e.g. `217-219,425-427`."""
+    value = str(_require(row, "scans", identifier=identifier))
+    message = _malformed(
+        identifier, "scans", value, "comma-separated scan numbers or ranges"
+    )
+    if not _SCANS.fullmatch(value):
+        raise MsnlibParseError(message)
+    scans: set[int] = set()
+    for part in value.split(","):
+        first, _, last = part.partition("-")
+        start, stop = int(first), int(last or first)
+        if stop < start:
+            raise MsnlibParseError(message)
+        scans.update(range(start, stop + 1))
+    return tuple(sorted(scans))
+
+
 def _sirius_spectrum(
     *,
     identifier: str,
@@ -266,6 +319,8 @@ def _sirius_spectrum(
     import path requires -- including `feature_id`, which comes back as
     `AlignedFeature.external_feature_id` and is how a run's features are
     joined to their true InChIKeys. `charge` follows the Ionization mode.
+    The measured MS1 scan (`GroundTruthSpectrum.ms1`) is likewise instrument
+    data, not the answer (ADR 0003).
     """
     order = np.argsort(mzs, kind="stable")
     return Spectrum(
@@ -313,6 +368,8 @@ def _parse_row(row: dict[str, object], *, row_number: int) -> GroundTruthSpectru
             ionization_mode=ionization_mode,
             instrument_type=instrument_type,
         ),
+        raw_file=_require_raw_file(row, identifier=identifier),
+        scans=_require_scans(row, identifier=identifier),
     )
 
 
@@ -370,7 +427,9 @@ def write_sirius_chunks(
     """Group `spectra` by (Ionization mode, Instrument type) into `SIRIUS_CHUNK_SIZE`-capped MGFs.
 
     Chunks are named from both, e.g. `orbitrap_negative_0.mgf`. Groups come
-    in order of their first spectrum.
+    in order of their first spectrum. A spectrum's measured MS1 scan, when it
+    has one, is written right before its MS2 under the same `FEATURE_ID`, so
+    SIRIUS imports both as one feature.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     grouped: dict[tuple[str, InstrumentType], list[GroundTruthSpectrum]] = {}
@@ -387,7 +446,12 @@ def write_sirius_chunks(
                 / f"{instrument_type.lower()}_{ionization_mode}_{chunk_number}.mgf"
             )
             save_as_mgf(
-                [s.spectrum for s in group[start : start + SIRIUS_CHUNK_SIZE]],
+                [
+                    block
+                    for s in group[start : start + SIRIUS_CHUNK_SIZE]
+                    for block in (s.ms1, s.spectrum)
+                    if block is not None
+                ],
                 str(path),
                 file_mode="w",
             )

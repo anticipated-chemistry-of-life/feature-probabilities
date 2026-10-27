@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -556,7 +556,9 @@ dependencies = [
     { name = "pandas" },
     { name = "polars" },
     { name = "pyarrow" },
+    { name = "pynumpress" },
     { name = "pysirius" },
+    { name = "pyteomics" },
     { name = "python-dotenv" },
     { name = "rdkit" },
     { name = "scikit-learn" },
@@ -585,7 +587,9 @@ requires-dist = [
     { name = "pandas", specifier = ">=3.0.5" },
     { name = "polars", specifier = ">=1.43.1" },
     { name = "pyarrow", specifier = ">=25.0.0" },
+    { name = "pynumpress", specifier = ">=0.1.5" },
     { name = "pysirius", git = "https://github.com/sirius-ms/sirius-client-openAPI.git?subdirectory=client-api_python%2Fgenerated" },
+    { name = "pyteomics", specifier = ">=5.0.1" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "rdkit", specifier = ">=2026.3.5" },
     { name = "scikit-learn", specifier = ">=1.9.0" },
@@ -1998,6 +2002,29 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/4a/fb/7f58c397fb31666756457ee2ac4c0289ef2daad57f4ae4be8dec12f80b03/pynndescent-0.6.0.tar.gz", hash = "sha256:7ffde0fb5b400741e055a9f7d377e3702e02250616834231f6c209e39aac24f5", size = 2992987, upload-time = "2026-01-08T21:29:58.943Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b2/e6/94145d714402fd5ade00b5661f2d0ab981219e07f7db9bfa16786cdb9c04/pynndescent-0.6.0-py3-none-any.whl", hash = "sha256:dc8c74844e4c7f5cbd1e0cd6909da86fdc789e6ff4997336e344779c3d5538ef", size = 73511, upload-time = "2026-01-08T21:29:57.306Z" },
+]
+
+[[package]]
+name = "pynumpress"
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8d/1a/e363fb5ee0b22bdb0edb47dd49d6d853145d4bfaa62f7ab17a032203e15b/pynumpress-0.1.5.tar.gz", hash = "sha256:1de50c64a9a9d419f289440e78c7126fdf779c8f8c1e0e8b31c849c4d3b54834", size = 145351, upload-time = "2026-08-26T00:30:16.422Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/e0/8e326ca3c87e064ba54b004d20eb01b3ca00040ad4271257ca549982fb71/pynumpress-0.1.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:3328746cde9aa0cd7ee44ae284e96600c68e9367b75ca93a1bf4cbff24f752df", size = 88560, upload-time = "2026-08-26T00:30:02.058Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/95/5364f54ff2f4b242b329733be82528ff2381ba5f8f99532fc4e01a3390ee/pynumpress-0.1.5-cp312-cp312-manylinux_2_34_x86_64.whl", hash = "sha256:a9a4e09f4e7a4fcc8a1d5c24d9a96ca4672a3350e6e938149a64ab1d973d2548", size = 672562, upload-time = "2026-08-26T00:30:03.186Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/00/243aa5ca4ba59d4b2d59f55bff79eb71165cce71628e2be3060fef6ce56c/pynumpress-0.1.5-cp312-cp312-win_amd64.whl", hash = "sha256:38c01046171e9826cd74b8a1aadf716e49be0a12e8ae08ab57c45bd38e291658", size = 262788, upload-time = "2026-08-26T00:30:04.516Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/c9/063274b81343b0e1feb6f857cd6a7ceed1e16ac0131b97b0072c58acf07f/pynumpress-0.1.5-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:ec1e3680fc6e33727c2838b969cf98ab878d74f9836456be0cce1f78ddf81692", size = 88146, upload-time = "2026-08-26T00:30:05.837Z" },
+    { url = "https://files.pythonhosted.org/packages/30/05/c09859240c67987f0aabb008aa0f63788a7f7182e8bbb5ffb0de419d1bd7/pynumpress-0.1.5-cp313-cp313-manylinux_2_34_x86_64.whl", hash = "sha256:7e5d8ddb7977d9660ccd16aab78c341bbeae68e16479496030d17d0cd6b5f81d", size = 650590, upload-time = "2026-08-26T00:30:06.915Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/63/6966a66087e9ebe8244b651e46c12357de0335c040e3843befd119124490/pynumpress-0.1.5-cp313-cp313-win_amd64.whl", hash = "sha256:0963732910f223ea2d8ea38356ea5abe0f3b28d45b59b0cb33172d144a9aeb72", size = 262138, upload-time = "2026-08-26T00:30:08.401Z" },
+    { url = "https://files.pythonhosted.org/packages/be/2d/568024d83eb1979791e94cd55ea539e09f9a8f2985f423828b62797af327/pynumpress-0.1.5-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:4b0a31b629b3ec5671eaaa252faeeefd8aea87ea867cb06d90fa20898ba7b80b", size = 88779, upload-time = "2026-08-26T00:30:09.385Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/ee/ab0691ab148ae7fb7b2cf1aad0b1f7e13d51661028fa1f5367995d4fe80a/pynumpress-0.1.5-cp314-cp314-manylinux_2_34_x86_64.whl", hash = "sha256:9995170f7c5468aa5a9f6f7d10f14295c13bfc3f4aefb652a25e5273e1a07cf9", size = 643060, upload-time = "2026-08-26T00:30:10.567Z" },
+    { url = "https://files.pythonhosted.org/packages/17/09/a9f656758c4681df55584eb0ce85db3ff172206267bb0ceda92a7ee30f50/pynumpress-0.1.5-cp314-cp314-win_amd64.whl", hash = "sha256:d8b4654e6c04ab926bbc6c1941ca6f8419c51156275674b2b5322b4136682b0c", size = 271314, upload-time = "2026-08-26T00:30:11.751Z" },
+    { url = "https://files.pythonhosted.org/packages/69/26/c4c83dccb96b77e74c07e2be9f038f0373366176592d0e6d7208b247bb91/pynumpress-0.1.5-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:d70bfe3b384908574a9f223b5036f1b7264489d023d3b9c506b3524af6c686fb", size = 96920, upload-time = "2026-08-26T00:30:12.868Z" },
+    { url = "https://files.pythonhosted.org/packages/41/62/78ebe2964347467b7bd0f17361b9860cffb249fe6f6845879372efe19a55/pynumpress-0.1.5-cp314-cp314t-manylinux_2_34_x86_64.whl", hash = "sha256:6f4c1148d07e256ddabf18d17777d6c86de448051d490be8719d048964763458", size = 654232, upload-time = "2026-08-26T00:30:14.111Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/5b/5a9a787ae3609fd9cbff005fc53e999d420fde675912007a9f0c85382b27/pynumpress-0.1.5-cp314-cp314t-win_amd64.whl", hash = "sha256:55806fda9385cd16bfb5fbf592024deab300b139e8563801fbceb73e98f45c24", size = 276122, upload-time = "2026-08-26T00:30:15.231Z" },
 ]
 
 [[package]]

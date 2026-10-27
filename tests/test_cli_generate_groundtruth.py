@@ -2,19 +2,23 @@
 
 Exercises the CLI end-to-end via `click.testing.CliRunner`, with the MSnLib
 parquet fetch monkeypatched to a small local fixture parquet (no live
-HuggingFace fetch) and `Sirius` monkeypatched to `FakeSirius` (no real
-SIRIUS process).
+HuggingFace fetch), the mzML archive fetch to a small local zip of
+hand-written mzML files (no Zenodo download), and `Sirius` monkeypatched to
+`FakeSirius` (no real SIRIUS process).
 """
 
 from __future__ import annotations
 
+import base64
 import re
+import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
+import numpy as np
 import pandas as pd
 import pytest
 from click.testing import CliRunner
@@ -67,8 +71,9 @@ class _ContentRecordingFakeSirius(FakeSirius):
         self.imported_mgf[Path(spectra_file).name] = Path(spectra_file).read_text()
 
     def imported_feature_ids(self) -> dict[str, list[str]]:
+        """Each chunk's features, in order; an MS1 block repeats its MS2's ID."""
         return {
-            name: _mgf_values(text, "FEATURE_ID")
+            name: list(dict.fromkeys(_mgf_values(text, "FEATURE_ID")))
             for name, text in self.imported_mgf.items()
         }
 
@@ -81,6 +86,82 @@ def _mgf_values(mgf_text: str, key: str) -> list[str]:
         for line in mgf_text.splitlines()
         if line.startswith(prefix)
     ]
+
+
+def _mgf_blocks(mgf_text: str) -> list[dict[str, object]]:
+    """Each `BEGIN IONS` block's `KEY=value` params and its (m/z, intensity) peaks."""
+    blocks: list[dict[str, object]] = []
+    for chunk in mgf_text.split("BEGIN IONS")[1:]:
+        block: dict[str, object] = {"peaks": []}
+        for line in chunk.split("END IONS")[0].strip().splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                block[key] = value
+            else:
+                mz, intensity = line.split()[:2]
+                block["peaks"].append((float(mz), float(intensity)))
+        blocks.append(block)
+    return blocks
+
+
+def _binary_array(name: str, accession: str, values: list[float]) -> str:
+    encoded = base64.b64encode(np.asarray(values, dtype="<f8").tobytes()).decode()
+    return (
+        f'<binaryDataArray encodedLength="{len(encoded)}">'
+        '<cvParam cvRef="MS" accession="MS:1000523" name="64-bit float"/>'
+        '<cvParam cvRef="MS" accession="MS:1000576" name="no compression"/>'
+        f'<cvParam cvRef="MS" accession="{accession}" name="{name}"/>'
+        f"<binary>{encoded}</binary></binaryDataArray>"
+    )
+
+
+def _mzml(scans: list[tuple[int, int, dict[float, float]]]) -> str:
+    """A minimal mzML of `(scan number, MS level, {m/z: intensity})` scans."""
+    spectra = "".join(
+        f'<spectrum index="{index}" id="controllerType=0 controllerNumber=1 '
+        f'scan={number}" defaultArrayLength="{len(peaks)}">'
+        f'<cvParam cvRef="MS" accession="MS:1000511" name="ms level" value="{level}"/>'
+        '<binaryDataArrayList count="2">'
+        + _binary_array("m/z array", "MS:1000514", list(peaks))
+        + _binary_array("intensity array", "MS:1000515", list(peaks.values()))
+        + "</binaryDataArrayList></spectrum>"
+        for index, (number, level, peaks) in enumerate(scans)
+    )
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<mzML xmlns="http://psi.hupo.org/ms/mzml" version="1.1.0"><run id="run">'
+        f'<spectrumList count="{len(scans)}">{spectra}</spectrumList></run></mzML>'
+    )
+
+
+#: The MS1 scan every default `_row` (precursor 151.0, MS2 scan 2 of
+#: `raw-run`) is measured in: its precursor, an isotope peak, and one peak
+#: just inside and one just outside 50 Da either side.
+_DEFAULT_MS1_PEAKS = {
+    100.5: 5.0,
+    101.5: 6.0,
+    151.0: 1000.0,
+    152.0034: 100.0,
+    200.5: 7.0,
+    201.5: 8.0,
+}
+
+
+def _write_archive(
+    path: Path, raw_files: dict[str, list[tuple[int, int, dict[float, float]]]]
+) -> Path:
+    """A zip of one `mzml/<stem>.mzML` member per `raw_files` entry."""
+    with zipfile.ZipFile(path, "w") as zf:
+        for stem, scans in raw_files.items():
+            zf.writestr(f"mzml/{stem}.mzML", _mzml(scans))
+    return path
+
+
+def _default_archive(directory: Path) -> Path:
+    return _write_archive(
+        directory / "mzml.zip",
+        {"raw-run": [(1, 1, _DEFAULT_MS1_PEAKS), (2, 2, {60.0: 1.0, 120.0: 2.0})]},
+    )
 
 
 _ADDUCT_BY_IONIZATION_MODE = {"positive": "[M+H]+", "negative": "[M-H]-"}
@@ -117,6 +198,9 @@ def _row(
         "ionmode": ionmode,
         "other_matched_compounds": None,
         "spectype": "ALL_ENERGIES",
+        "usi": "mzspec:MSV000094528:raw-run:2",
+        "source_scan_usi": None,
+        "scans": "2",
     }
     row.update(overrides)
     return row
@@ -175,12 +259,28 @@ def _patch_sirius(monkeypatch: pytest.MonkeyPatch, fake: FakeSirius) -> None:
     )
 
 
+def _patch_archives(monkeypatch: pytest.MonkeyPatch, archives: list[Path]) -> None:
+    monkeypatch.setattr(
+        "feature_probabilities.cli_generate_groundtruth.fetch_msnlib_mzml_archives",
+        lambda: archives,
+    )
+
+
 def _patch_seams(
-    monkeypatch: pytest.MonkeyPatch, *, parquet_path: Path, fake: FakeSirius
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    parquet_path: Path,
+    fake: FakeSirius,
+    archives: list[Path] | None = None,
 ) -> None:
+    """Fake MSnLib's parquet, its mzML archives (default: `_default_archive`), and SIRIUS."""
     monkeypatch.setattr(
         "feature_probabilities.cli_generate_groundtruth.fetch_msnlib_parquet",
         lambda revision: parquet_path,
+    )
+    _patch_archives(
+        monkeypatch,
+        archives if archives is not None else [_default_archive(parquet_path.parent)],
     )
     _patch_sirius(monkeypatch, fake)
 
@@ -257,7 +357,10 @@ def test_each_ionization_mode_gets_its_own_chunk_charge_and_run(
     }
     assert {
         name: _mgf_values(text, "CHARGE") for name, text in fake.imported_mgf.items()
-    } == {"orbitrap_negative_0.mgf": ["1-"], "orbitrap_positive_0.mgf": ["1+"]}
+    } == {
+        "orbitrap_negative_0.mgf": ["1-", "1-"],
+        "orbitrap_positive_0.mgf": ["1+", "1+"],
+    }
     with _open_db(db_path) as session:
         runs = session.scalars(select(SiriusRun)).all()
         assert {
@@ -304,9 +407,167 @@ def test_the_mgf_carries_neither_the_answer_nor_the_merged_collision_energies(
     assert mgf_keys.isdisjoint(
         {"SMILES", "INCHIKEY", "FORMULA", "PARENT_MASS", "ADDUCT", "COLLISION_ENERGY"}
     )
-    assert _mgf_values(fake.imported_mgf["orbitrap_positive_0.mgf"], "FEATURE_ID") == [
-        "MSnLibID-pos"
+    assert fake.imported_feature_ids() == {"orbitrap_positive_0.mgf": ["MSnLibID-pos"]}
+
+
+def _invoke(tmp_path: Path) -> object:
+    return CliRunner().invoke(
+        main, ["--config", str(_write_config(tmp_path, tmp_path / "db.duckdb"))]
+    )
+
+
+def test_the_measured_ms1_scan_precedes_its_ms2_cut_to_50_da_around_the_precursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _fake_sirius_for("MSnLibID-pos")
+    _patch_seams(
+        monkeypatch,
+        parquet_path=_write_parquet(tmp_path, [_row("MSnLibID-pos")]),
+        fake=fake,
+    )
+
+    result = _invoke(tmp_path)
+
+    assert result.exit_code == 0, result.output
+    ms1, ms2 = _mgf_blocks(fake.imported_mgf["orbitrap_positive_0.mgf"])
+    assert {
+        key: ms1[key] for key in ("FEATURE_ID", "MS_LEVEL", "PEPMASS", "CHARGE")
+    } == {
+        "FEATURE_ID": "MSnLibID-pos",
+        "MS_LEVEL": "1",
+        "PEPMASS": "151.0",
+        "CHARGE": "1+",
+    }
+    assert ms1["peaks"] == [
+        (101.5, 6.0),
+        (151.0, 1000.0),
+        (152.0034, 100.0),
+        (200.5, 7.0),
     ]
+    assert ms2["FEATURE_ID"] == "MSnLibID-pos"
+    assert ms2["MS_LEVEL"] == "2"
+    assert "0 spectrum(s) had no measured MS1 scan" in result.output
+
+
+def test_the_ms1_scan_is_the_preceding_one_where_the_precursor_is_most_intense(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scan 1's 151.002 peak is 13 ppm off the precursor, so it does not count.
+
+    Scan 5 holds the most intense precursor but follows the last MS2 scan.
+    """
+    archive = _write_archive(
+        tmp_path / "mzml.zip",
+        {
+            "raw-run": [
+                (1, 1, {151.002: 500.0, 160.0: 1.0}),
+                (2, 2, {60.0: 1.0}),
+                (3, 1, {151.0: 50.0, 170.0: 1.0}),
+                (4, 2, {60.0: 1.0}),
+                (5, 1, {151.0: 900.0, 180.0: 1.0}),
+                (6, 2, {60.0: 1.0}),
+            ]
+        },
+    )
+    fake = _fake_sirius_for("MSnLibID-pos")
+    _patch_seams(
+        monkeypatch,
+        parquet_path=_write_parquet(tmp_path, [_row("MSnLibID-pos", scans="2,4")]),
+        fake=fake,
+        archives=[archive],
+    )
+
+    result = _invoke(tmp_path)
+
+    assert result.exit_code == 0, result.output
+    ms1, _ = _mgf_blocks(fake.imported_mgf["orbitrap_positive_0.mgf"])
+    assert ms1["peaks"] == [(151.0, 50.0), (170.0, 1.0)]
+
+
+def test_a_spectrum_whose_precursor_is_in_no_preceding_ms1_scan_goes_ms2_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _write_archive(
+        tmp_path / "mzml.zip",
+        {
+            "raw-run": [(1, 1, _DEFAULT_MS1_PEAKS), (2, 2, {60.0: 1.0})],
+            "other-run": [(1, 1, {300.0: 10.0}), (2, 2, {60.0: 1.0})],
+        },
+    )
+    fake = _fake_sirius_for("MSnLibID-measured")
+    _patch_seams(
+        monkeypatch,
+        parquet_path=_write_parquet(
+            tmp_path,
+            [
+                _row("MSnLibID-unmeasured", usi="mzspec:MSV000094528:other-run:2"),
+                _row("MSnLibID-measured"),
+            ],
+        ),
+        fake=fake,
+        archives=[archive],
+    )
+
+    result = _invoke(tmp_path)
+
+    assert result.exit_code == 0, result.output
+    blocks = _mgf_blocks(fake.imported_mgf["orbitrap_positive_0.mgf"])
+    assert [(block["FEATURE_ID"], block["MS_LEVEL"]) for block in blocks] == [
+        ("MSnLibID-unmeasured", "2"),
+        ("MSnLibID-measured", "1"),
+        ("MSnLibID-measured", "2"),
+    ]
+    assert "1 spectrum(s) had no measured MS1 scan" in result.output
+
+
+def test_source_scan_usi_names_the_raw_file_over_a_usi_naming_a_library_mgf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _fake_sirius_for("MSnLibID-pos")
+    row = _row(
+        "MSnLibID-pos",
+        usi="mzspec:MSV000094528:20250828_library_pos_ms2:7",
+        source_scan_usi='["mzspec:MSV000094528:raw-run:2"]',
+    )
+    _patch_seams(monkeypatch, parquet_path=_write_parquet(tmp_path, [row]), fake=fake)
+
+    result = _invoke(tmp_path)
+
+    assert result.exit_code == 0, result.output
+    ms1, _ = _mgf_blocks(fake.imported_mgf["orbitrap_positive_0.mgf"])
+    assert ms1["MS_LEVEL"] == "1"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "named"),
+    [
+        ({"usi": "mzspec:MSV000094528:absent-run:2"}, "absent-run"),
+        ({"scans": "2-3"}, "[3]"),
+    ],
+    ids=["raw-file-in-no-archive", "scan-not-in-raw-file"],
+)
+def test_a_spectrum_whose_ms2_scans_are_not_in_the_archives_fails_before_sirius(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+    named: str,
+) -> None:
+    fake = _fake_sirius_for("MSnLibID-good")
+    _patch_seams(
+        monkeypatch,
+        parquet_path=_write_parquet(
+            tmp_path, [_row("MSnLibID-good"), _row("MSnLibID-bad", **overrides)]
+        ),
+        fake=fake,
+    )
+
+    result = _invoke(tmp_path)
+
+    assert result.exit_code == 1, result.output
+    assert "MSnLibID-bad" in result.output
+    assert named in result.output
+    assert "Traceback" not in result.output
+    assert fake.run_calls == []
 
 
 def test_rows_outside_the_ground_truth_set_never_reach_sirius_and_are_counted(
@@ -361,6 +622,11 @@ def test_rows_outside_the_ground_truth_set_never_reach_sirius_and_are_counted(
         {"ionmode": "positive", "charge": -1},
         {"ionmode": "negative", "charge": 1, "adduct": "[M-H]-"},
         {"instrument_type": ""},
+        {"scans": ""},
+        {"scans": "2-"},
+        {"scans": "5-3"},
+        {"usi": "not-a-usi"},
+        {"usi": "mzspec:MSV000094528:run-a:2, mzspec:MSV000094528:run-b:3"},
     ],
     ids=[
         "malformed-mzs",
@@ -377,6 +643,11 @@ def test_rows_outside_the_ground_truth_set_never_reach_sirius_and_are_counted(
         "positive-ionmode-negative-charge",
         "negative-ionmode-positive-charge",
         "blank-instrument",
+        "blank-scans",
+        "open-scan-range",
+        "reversed-scan-range",
+        "usi-without-raw-file",
+        "usi-with-two-raw-files",
     ],
 )
 def test_a_malformed_spectrum_fails_the_run_naming_it_before_any_sirius_run(
@@ -432,6 +703,9 @@ def test_an_unknown_instrument_fails_the_run_naming_the_spectrum_and_the_value(
         "ionmode",
         "spectype",
         "other_matched_compounds",
+        "usi",
+        "source_scan_usi",
+        "scans",
     ],
 )
 def test_a_missing_required_column_fails_the_run_naming_it(
@@ -889,10 +1163,15 @@ def test_smoke_test_without_a_smoke_test_section_fails_with_a_clear_message(
 
 
 def _patch_hub_download(
-    monkeypatch: pytest.MonkeyPatch, download: object, *, fake: FakeSirius
+    monkeypatch: pytest.MonkeyPatch,
+    download: object,
+    *,
+    fake: FakeSirius,
+    tmp_path: Path,
 ) -> None:
     """Fake only HuggingFace itself, so the CLI's real MSnLib fetch runs."""
     monkeypatch.setattr("feature_probabilities.msnlib.hf_hub_download", download)
+    _patch_archives(monkeypatch, [_default_archive(tmp_path)])
     _patch_sirius(monkeypatch, fake)
 
 
@@ -915,7 +1194,7 @@ def test_msnlib_is_fetched_from_the_hub_at_the_ground_truth_revision(
         return str(parquet_path)
 
     fake = _fake_sirius_for("MSnLibID-pos")
-    _patch_hub_download(monkeypatch, download, fake=fake)
+    _patch_hub_download(monkeypatch, download, fake=fake, tmp_path=tmp_path)
 
     result = CliRunner().invoke(
         main,
@@ -954,7 +1233,7 @@ def test_a_fetch_failure_fails_the_run_naming_the_dataset_and_revision(
         raise error
 
     fake = _fake_sirius_for("MSnLibID-pos")
-    _patch_hub_download(monkeypatch, download, fake=fake)
+    _patch_hub_download(monkeypatch, download, fake=fake, tmp_path=tmp_path)
 
     result = CliRunner().invoke(
         main, ["--config", str(_write_config(tmp_path, tmp_path / "db.duckdb"))]

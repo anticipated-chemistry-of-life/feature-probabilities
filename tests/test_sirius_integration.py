@@ -69,6 +69,28 @@ NEGATIVE_IDENTIFIER = "MSnLibID0154203"
 NEGATIVE_INCHIKEY_FIRST_BLOCK = "QAIPRVGONGVQAS"
 NEGATIVE_PRECURSOR_MZ = 179.03498
 
+#: The fixture spectrum's raw file trimmed to its MS2 scans 195-197 and the
+#: MS1 scan 194 preceding them, peaks unchanged, in a zip under the member
+#: path it has in its Zenodo archive (`msnlib_ms1.MSNLIB_MZML_ARCHIVES`).
+NEGATIVE_MZML_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "msnlib_negative_single_mzml.zip"
+)
+
+
+def _patch_msnlib(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve MSnLib's parquet and mzML archives from the checked-in fixtures."""
+    monkeypatch.setattr(
+        cli_generate_groundtruth,
+        "fetch_msnlib_parquet",
+        lambda _revision: NEGATIVE_FIXTURE,
+    )
+    monkeypatch.setattr(
+        cli_generate_groundtruth,
+        "fetch_msnlib_mzml_archives",
+        lambda: [NEGATIVE_MZML_FIXTURE],
+    )
+
+
 #: The checked-in config is what this test drives -- via `--config` with only
 #: `--db` overridden -- so it verifies the parameters an operator actually
 #: runs with, not a set invented here. An empty `[sirius.analysis_params]`,
@@ -160,11 +182,7 @@ def test_single_negative_msnlib_spectrum_runs_through_real_sirius(
     candidates -- only a real SIRIUS can catch that, the fake cannot.
     """
     db_path = tmp_path / "groundtruth.duckdb"
-    monkeypatch.setattr(
-        cli_generate_groundtruth,
-        "fetch_msnlib_parquet",
-        lambda _revision: NEGATIVE_FIXTURE,
-    )
+    _patch_msnlib(monkeypatch)
     result = CliRunner().invoke(
         main,
         [
@@ -242,11 +260,7 @@ def test_rerunning_the_same_negative_spectrum_hits_the_cache_instead_of_sirius(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "groundtruth.duckdb"
-    monkeypatch.setattr(
-        cli_generate_groundtruth,
-        "fetch_msnlib_parquet",
-        lambda _revision: NEGATIVE_FIXTURE,
-    )
+    _patch_msnlib(monkeypatch)
     runner = CliRunner()
     args = [
         "--config",

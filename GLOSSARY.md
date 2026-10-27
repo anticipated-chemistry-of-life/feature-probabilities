@@ -31,7 +31,7 @@ The maximum number of best-ranked (by CSI:FingerID score) structure candidates p
 _Avoid_: candidate cap, candidate limit, max candidates
 
 **Ground truth set**:
-The `ALL_ENERGIES` spectra of MSnLib (each a merge of one compound's MS2 scans across all collision energies) at a pinned dataset revision, in both Ionization modes, all acquired on Orbitrap. Excludes spectra whose identity is ambiguous (matched to more than one library compound) and spectra whose adduct SIRIUS cannot detect. Used to fit the calibration score's KDEs.
+The `ALL_ENERGIES` spectra of MSnLib (each a merge of one compound's MS2 scans across all collision energies) at a pinned dataset revision, in both Ionization modes, all acquired on Orbitrap. Excludes spectra whose identity is ambiguous (matched to more than one library compound) and spectra whose adduct SIRIUS cannot detect. Each is given to SIRIUS with the measured MS1 scan around its precursor, from MSnLib's raw mzML files. Used to fit the calibration score's KDEs.
 _Avoid_: MassSpecGym (the former ground truth set)
 
 **Ionization mode**:

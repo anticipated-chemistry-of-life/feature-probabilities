@@ -58,6 +58,19 @@ an `ionmode` that is not exactly `positive` or `negative` or disagrees with
 the sign of `charge`, or an unknown instrument fails the run before any
 SIRIUS work, naming the spectrum.
 
+Each spectrum is sent to SIRIUS with the MS1 scan its precursor was
+measured in, so SIRIUS can use the isotope pattern and recognise adducts
+outside its fallback list, as it does for field runs (ADR 0003). The MS1
+scan comes from MSnLib's raw mzML files: the Zenodo record's 18 zip
+archives (21.6 GB, MD5-pinned in `msnlib_ms1.py`). They are downloaded on
+the first run, `--smoke-test` included, into
+`~/.cache/feature-probabilities/msnlib-mzml/`. Of the MS1 scans preceding
+the spectrum's MS2 scans, the one where the precursor is most intense is
+used, cut to the precursor m/z ± 50 Da and written right before the MS2
+under the same `FEATURE_ID`. Spectra without such a scan go with MS2 only;
+the run summary counts them. A raw file or MS2 scan missing from the
+archives fails the run before any SIRIUS work.
+
 Spectra are chunked by (Ionization mode, Instrument type), e.g.
 `orbitrap_negative_0.mgf`, at most 2,000 spectra per chunk. Each chunk is
 written with `CHARGE=1+` or `CHARGE=1-`, analysed under its Instrument
@@ -68,7 +81,9 @@ SIRIUS is never shown the answer: no adduct, structure, formula, parent
 mass or collision energy reaches the MGF.
 
 A database created before MSnLib ground truth is not migrated: delete it
-and rerun `generate-groundtruth` and `annotate` (ADR 0002).
+and rerun `generate-groundtruth` and `annotate` (ADR 0002). Ground truth
+runs from before measured MS1 are not replaced by a rerun, and `fit-kde`
+reads every ground truth run: regenerate into a fresh database (ADR 0003).
 
 ## Calibration
 

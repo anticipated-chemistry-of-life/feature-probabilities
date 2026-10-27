@@ -2,8 +2,10 @@
 
 Given the shared TOML config, fetches MSnLib, the Ground truth set
 (GLOSSARY.md), at the config's ``ground_truth_revision``
-(`msnlib.fetch_msnlib_parquet`), chunks it by (Ionization mode, Instrument
-type), and runs every chunk through the cache-aware SIRIUS pipeline with
+(`msnlib.fetch_msnlib_parquet`), attaches each spectrum's measured MS1 scan
+from MSnLib's raw mzML archives (`msnlib_ms1`; ADR 0003), chunks it by
+(Ionization mode, Instrument type), and runs every chunk through the
+cache-aware SIRIUS pipeline with
 ``source_kind='ground_truth_msnlib'``/``extract_id=None``, setting each
 resulting feature's ``true_inchikey`` from MSnLib's known structure.
 
@@ -76,6 +78,10 @@ from feature_probabilities.msnlib import (
     read_ground_truth_set,
     write_sirius_chunks,
 )
+from feature_probabilities.msnlib_ms1 import (
+    attach_measured_ms1,
+    fetch_msnlib_mzml_archives,
+)
 from feature_probabilities.run_cache import (
     RunCacheError,
     SiriusRunRequest,
@@ -139,6 +145,9 @@ class GroundtruthSummary:
     cache_hits: int
     features_seen: int
     annotations_seen: int
+    #: Spectra sent to SIRIUS with MS2 only, since no measured MS1 scan
+    #: preceding their MS2 scans holds the precursor.
+    spectra_without_ms1: int
     failures: tuple[ChunkFailure, ...] = ()
 
 
@@ -167,11 +176,12 @@ def generate_groundtruth(
 ) -> GroundtruthSummary:
     """Run the full pipeline against an already-open `session`.
 
-    Fetches `config.ground_truth_revision` of MSnLib, chunks it by
-    (Ionization mode, Instrument type) -- only `ionization_mode`'s spectra
-    unless it's `"all"`, and only the first `spectra_per_ionization_mode` of
-    each Ionization mode, in parquet order, when set -- and runs every chunk
-    through `run_cache.get_or_create_run` with
+    Fetches `config.ground_truth_revision` of MSnLib, attaches each kept
+    spectrum's measured MS1 scan, chunks it by (Ionization mode, Instrument
+    type) -- only `ionization_mode`'s spectra unless it's `"all"`, and only
+    the first `spectra_per_ionization_mode` of each Ionization mode, in
+    parquet order, when set -- and runs every chunk through
+    `run_cache.get_or_create_run` with
     `source_kind='ground_truth_msnlib'`/`extract_id=None`/`force=force`,
     setting each resulting feature's `true_inchikey`. `force=True` also sets
     the SIRIUS `JobSubmission.recompute` field.
@@ -183,14 +193,17 @@ def generate_groundtruth(
     than aborting the whole run. Either way `sirius` is shut down after the
     chunk, freeing the heap SIRIUS never releases on its own. Only errors
     raised *before* any chunk is processed (SIRIUS version mismatch, MSnLib
-    fetch/parse failure) or by a shutdown propagate out of this function.
+    fetch/parse failure, MS1 extraction failure) or by a shutdown propagate
+    out of this function.
 
     Raises:
         SiriusVersionMismatchError: the installed SIRIUS version doesn't
             match `config.required_sirius_version`.
-        MsnlibFetchError: MSnLib couldn't be fetched at that revision.
-        MsnlibParseError: MSnLib's parquet lacks a required column, or a
-            kept spectrum is malformed or names an unknown instrument.
+        MsnlibFetchError: MSnLib's parquet or mzML archives couldn't be
+            fetched, or a spectrum's raw file is in none of the archives.
+        MsnlibParseError: MSnLib's parquet lacks a required column, a kept
+            spectrum is malformed or names an unknown instrument, or its raw
+            file lacks one of its MS2 scans.
         SiriusShutdownError: SIRIUS didn't exit after a chunk.
     """
     require_matching_sirius_version(sirius, config.required_sirius_version)
@@ -205,10 +218,11 @@ def generate_groundtruth(
     ]
     if spectra_per_ionization_mode is not None:
         spectra = _first_per_ionization_mode(spectra, spectra_per_ionization_mode)
+    measured = attach_measured_ms1(spectra, fetch_msnlib_mzml_archives())
     true_inchikey_by_identifier = {
-        spectrum.identifier: spectrum.true_inchikey for spectrum in spectra
+        spectrum.identifier: spectrum.true_inchikey for spectrum in measured.spectra
     }
-    chunk_groups = write_sirius_chunks(spectra, work_dir / "chunks")
+    chunk_groups = write_sirius_chunks(measured.spectra, work_dir / "chunks")
 
     chunks_processed = 0
     cache_hits = 0
@@ -260,6 +274,7 @@ def generate_groundtruth(
         cache_hits=cache_hits,
         features_seen=features_seen,
         annotations_seen=annotations_seen,
+        spectra_without_ms1=measured.without_ms1,
         failures=tuple(failures),
     )
 
@@ -274,6 +289,10 @@ def _format_summary(summary: GroundtruthSummary) -> str:
             f"{counts.dropped_ambiguous_identity} matched to other library "
             f"compounds, {counts.dropped_undetectable_adduct} with an adduct "
             "SIRIUS cannot detect."
+        ),
+        (
+            f"{summary.spectra_without_ms1} spectrum(s) had no measured MS1 scan "
+            "holding their precursor and were sent to SIRIUS with MS2 only."
         ),
         (
             f"generate-groundtruth: processed {summary.chunks_processed} chunk(s) "
