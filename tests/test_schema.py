@@ -18,7 +18,7 @@ from feature_probabilities.schema import (
     SOURCE_KIND_GROUND_TRUTH_MSNLIB,
     Annotation,
     Base,
-    CalibrationScore,
+    CalibrationDensities,
     Extract,
     Feature,
     KdeModel,
@@ -36,7 +36,7 @@ EXPECTED_TABLE_NAMES = {
     "molecules",
     "annotations",
     "kde_models",
-    "calibration_scores",
+    "calibration_densities",
 }
 
 
@@ -119,12 +119,13 @@ def _insert_full_graph(session: Session) -> dict[str, int]:
     session.add(kde_model)
     session.flush()
 
-    calibration_score = CalibrationScore(
+    calibration_densities = CalibrationDensities(
         annotation_id=annotation.annotation_id,
         kde_model_id=kde_model.kde_model_id,
-        score=0.42,
+        log_correct_density=-3.5,
+        log_incorrect_density=-7.25,
     )
-    session.add(calibration_score)
+    session.add(calibration_densities)
     session.flush()
 
     return {
@@ -180,11 +181,12 @@ def test_inserting_one_valid_row_per_table_succeeds() -> None:
         assert session.get(Molecule, ids["molecule_id"]) is not None
         assert session.get(Annotation, ids["annotation_id"]) is not None
         assert session.get(KdeModel, ids["kde_model_id"]) is not None
-        calibration_score = session.get(
-            CalibrationScore, (ids["annotation_id"], ids["kde_model_id"])
+        densities = session.get(
+            CalibrationDensities, (ids["annotation_id"], ids["kde_model_id"])
         )
-        assert calibration_score is not None
-        assert calibration_score.score == pytest.approx(0.42)
+        assert densities is not None
+        assert densities.log_correct_density == pytest.approx(-3.5)
+        assert densities.log_incorrect_density == pytest.approx(-7.25)
 
 
 def test_duplicate_taxon_scientific_name_is_rejected() -> None:
@@ -344,45 +346,7 @@ def test_sirius_run_rejects_an_unrecognized_source_kind() -> None:
             session.commit()
 
 
-def test_two_calibration_scores_for_the_same_annotation_with_different_kde_models_both_succeed() -> (
-    None
-):
-    engine = create_database(":memory:")
-    with Session(engine) as session:
-        ids = _insert_full_graph(session)
-        session.commit()
-
-        second_kde_model = KdeModel(
-            artifact_path="/artifacts/kde-v2.pkl",
-            subsample_seed=0,
-            incorrect_subsample_size=20_000,
-            positive_incorrect_rows_used=1,
-            negative_incorrect_rows_used=1,
-        )
-        session.add(second_kde_model)
-        session.flush()
-        session.add(
-            CalibrationScore(
-                annotation_id=ids["annotation_id"],
-                kde_model_id=second_kde_model.kde_model_id,
-                score=0.77,
-            )
-        )
-        session.commit()
-
-        scores = session.scalars(
-            sa.select(CalibrationScore).where(
-                CalibrationScore.annotation_id == ids["annotation_id"]
-            )
-        ).all()
-        assert {s.kde_model_id for s in scores} == {
-            ids["kde_model_id"],
-            second_kde_model.kde_model_id,
-        }
-        assert {s.score for s in scores} == {0.42, 0.77}
-
-
-def test_duplicate_calibration_score_for_same_annotation_and_kde_model_is_rejected() -> (
+def test_duplicate_calibration_densities_for_same_annotation_and_kde_model_is_rejected() -> (
     None
 ):
     engine = create_database(":memory:")
@@ -391,10 +355,11 @@ def test_duplicate_calibration_score_for_same_annotation_and_kde_model_is_reject
         session.commit()
 
         session.add(
-            CalibrationScore(
+            CalibrationDensities(
                 annotation_id=ids["annotation_id"],
                 kde_model_id=ids["kde_model_id"],
-                score=0.99,
+                log_correct_density=-1.0,
+                log_incorrect_density=-2.0,
             )
         )
         with pytest.raises(sa.exc.IntegrityError):

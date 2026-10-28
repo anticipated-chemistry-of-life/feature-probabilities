@@ -8,15 +8,15 @@ dialect.
 
 Table shape and FK-respecting insert order (species must exist before
 extracts, extracts before sirius_runs, sirius_runs before features, molecules
-before annotations, features/annotations before calibration_scores):
+before annotations, features/annotations before calibration_densities):
 
 ``species`` -> ``extracts`` -> ``sirius_runs`` -> ``features``/``molecules``
--> ``annotations`` -> ``kde_models`` -> ``calibration_scores``
+-> ``annotations`` -> ``kde_models`` -> ``calibration_densities``
 
 See the DuckDB schema decision (issue #4) and its checksum-column follow-up
 (issue #5) for the full column-level derivation, and ``GLOSSARY.md`` for the
 domain vocabulary (Feature, Structure candidate, Molecule, Annotation,
-Extract, SIRIUS run, Calibration score) these tables encode.
+Extract, SIRIUS run, Correct density, Incorrect density) these tables encode.
 
 Primary keys use an explicit :class:`sqlalchemy.Sequence` rather than
 ``autoincrement=True``/``Identity()``: duckdb-engine's Postgres-flavored DDL
@@ -227,15 +227,16 @@ class KdeModel(Base):
     negative_incorrect_rows_used: Mapped[int] = mapped_column(sa.Integer)
 
 
-class CalibrationScore(Base):
-    """One KDE model version's score for one annotation.
+class CalibrationDensities(Base):
+    """One KDE model version's correct and incorrect log densities for one annotation.
 
     Many rows per annotation -- one per KDE model version ever applied to it
     -- so refitting the calibration never erases the ability to compare old
-    and new scores.
+    and new results. Both values are natural-log densities (`logpdf`) at the
+    annotation's (ion mass, CSI:FingerID score) in its run's Ionization mode.
     """
 
-    __tablename__ = "calibration_scores"
+    __tablename__ = "calibration_densities"
 
     annotation_id: Mapped[int] = mapped_column(
         sa.ForeignKey("annotations.annotation_id"), primary_key=True
@@ -243,7 +244,8 @@ class CalibrationScore(Base):
     kde_model_id: Mapped[int] = mapped_column(
         sa.ForeignKey("kde_models.kde_model_id"), primary_key=True
     )
-    score: Mapped[float] = mapped_column(sa.Double)
+    log_correct_density: Mapped[float] = mapped_column(sa.Double)
+    log_incorrect_density: Mapped[float] = mapped_column(sa.Double)
 
 
 def create_database(db_path: str | Path) -> Engine:

@@ -1,27 +1,30 @@
 """Applies a fitted KDE pickle to a batch of already-annotated features.
 
-Issue #24's slice: given a loaded per-Ionization-mode KDE dict (`fit-kde`'s
-#22 pickle shape, `kde.fit_stratified_kdes`'s output) and an explicit set of
-`annotations` already in the DB, computes each annotation's calibration
-score -- `kdes[ionization_mode].pdf((ion_mass, csi_score))`, per the KDE
-calibration method decision (issue #7, ADR 0002) -- and upserts one
-`calibration_scores` row per `(annotation_id, kde_model_id)`.
+Given a loaded per-Ionization-mode artifact (`fit-kde`'s pickle shape,
+`kde.fit_stratified_kdes`'s output: a correct and an incorrect density per
+mode) and an explicit set of `annotations` already in the DB, calibration
+evaluates each annotation's natural-log correct density and natural-log
+incorrect density -- `logpdf` of each density at `(ion_mass, csi_score)`
+(ADR 0002, ADR 0004) -- and upserts one `calibration_densities` row per
+`(annotation_id, kde_model_id)`.
 
-Issue #34: each Ionization mode's KDE is evaluated over that mode's
-annotations in chunks of at most `EVALUATION_CHUNK_SIZE`, one `kde.pdf` call
-per chunk -- never one call per annotation, since every call does work
-proportional to the KDE's training set before it evaluates a single point.
+Each Ionization mode's densities are evaluated over that mode's
+annotations in chunks of at most `EVALUATION_CHUNK_SIZE`, one `logpdf` call
+per density per chunk -- never one call per annotation, since every call
+does work proportional to the density's training set before it evaluates a
+single point.
 
-KDE selection: the owning `sirius_runs` row's Ionization mode, with no
+Density selection: the owning `sirius_runs` row's Ionization mode, with no
 fallback. :func:`load_kdes` refuses an artifact lacking either mode (e.g. an
-old instrument-keyed pickle), so every SIRIUS run's mode always has a KDE.
+old instrument-keyed pickle), so every SIRIUS run's mode always has both
+densities.
 
 Deliberately does **not** touch the `Sirius` wrapper, and never writes
 `sirius_runs`/`features`/`annotations` -- pure DB read/compute/write against
-`calibration_scores` only, as issue #24 requires. The caller always states
-which annotations to score (there is no "every annotation in the DB"
+`calibration_densities` only, as issue #24 requires. The caller always states
+which annotations to calibrate (there is no "every annotation in the DB"
 default): the whole DB includes ground-truth annotations, which are never
-meant to receive a calibration score. Selecting *which*
+meant to receive calibration densities. Selecting *which*
 pickle/`kde_model_id` to apply (`--kde-model`, defaulting to the most
 recently fitted `kde_models` row) is `annotate`'s remaining CLI surface
 (issue #25), which also relies on this module's upsert semantics to stay
@@ -49,7 +52,7 @@ from sqlalchemy.orm import Session
 from feature_probabilities.kde import IONIZATION_MODES, ModeDensities
 from feature_probabilities.schema import (
     Annotation,
-    CalibrationScore,
+    CalibrationDensities,
     Feature,
     SiriusRun,
 )
@@ -57,9 +60,8 @@ from feature_probabilities.schema import (
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    from scipy.stats import gaussian_kde
 
-#: Most annotations one `kde.pdf` call evaluates. scipy whitens a KDE's whole
+#: Most annotations one density `logpdf` call evaluates. scipy whitens a KDE's whole
 #: training set on every call, so a call per annotation repeats that work for
 #: each of them; a chunk pays it once, while keeping the arrays a call holds
 #: a bounded size however large the batch.
@@ -151,25 +153,27 @@ def _annotation_targets(
     ]
 
 
-def _score_in_chunks(
-    kdes: dict[str, gaussian_kde],
+def _evaluate_in_chunks(
+    densities: dict[str, ModeDensities],
     targets: Sequence[AnnotationScoringTarget],
     chunk_size: int,
-) -> Iterator[tuple[int, float]]:
-    """Yield `(annotation_id, pdf)` for every target, one `kde.pdf` call per chunk.
+) -> Iterator[tuple[int, float, float]]:
+    """Yield `(annotation_id, log_correct_density, log_incorrect_density)` per target.
 
-    Groups `targets` by Ionization mode, then evaluates that mode's KDE over
-    its group `chunk_size` points at a time.
+    Groups `targets` by Ionization mode, then evaluates that mode's correct
+    and incorrect densities' `logpdf` over its group `chunk_size` points at
+    a time. `logpdf` rather than `pdf`: far from the training data a density
+    underflows to 0.0, whose log is -inf.
 
     Raises:
-        KeyError: `kdes` has no KDE for a target's Ionization mode.
+        KeyError: `densities` has none for a target's Ionization mode.
     """
     targets_by_mode: defaultdict[str, list[AnnotationScoringTarget]] = defaultdict(list)
     for target in targets:
         targets_by_mode[target.ionization_mode].append(target)
 
     for ionization_mode, mode_targets in targets_by_mode.items():
-        kde = kdes[ionization_mode]
+        mode_densities = densities[ionization_mode]
         for chunk in batched(mode_targets, chunk_size):
             points = np.array(
                 [
@@ -177,55 +181,64 @@ def _score_in_chunks(
                     [target.csi_score for target in chunk],
                 ]
             )
-            for target, score in zip(chunk, kde.pdf(points), strict=True):
-                yield target.annotation_id, float(score)
+            for target, log_correct, log_incorrect in zip(
+                chunk,
+                mode_densities.correct.logpdf(points),
+                mode_densities.incorrect.logpdf(points),
+                strict=True,
+            ):
+                yield target.annotation_id, float(log_correct), float(log_incorrect)
 
 
 def apply_calibration(
     session: Session,
-    kdes: dict[str, gaussian_kde],
+    densities: dict[str, ModeDensities],
     kde_model_id: int,
     *,
     annotation_ids: Sequence[int],
     chunk_size: int = EVALUATION_CHUNK_SIZE,
 ) -> CalibrationSummary:
-    """Score every `annotation_ids` row against `kdes` and persist+commit the result.
+    """Evaluate both densities for every `annotation_ids` row and persist+commit them.
 
     Groups the targeted annotations by their SIRIUS run's Ionization mode --
-    there is no fallback KDE -- and evaluates `kdes[ionization_mode].pdf` over
-    each group's `(ion_mass, csi_score)` points in one call per chunk of at
-    most `chunk_size` annotations, never one call per annotation.
-    `chunk_size` only bounds each call; it never changes a stored
-    score. Then upserts one `calibration_scores` row keyed
+    there is no fallback -- and evaluates that mode's correct and incorrect
+    density `logpdf` over each group's `(ion_mass, csi_score)` points in one
+    call per chunk of at most `chunk_size` annotations, never one call per
+    annotation. `chunk_size` only bounds each call; it never changes a stored
+    value. Then upserts one `calibration_densities` row keyed
     `(annotation_id, kde_model_id)` per annotation: a fresh pair is inserted,
-    an already-scored pair has its `score` updated in place.
+    an already-scored pair has both log densities updated in place.
 
     Running this a second time with a *different* `kde_model_id` for the
     same annotations inserts a second, coexisting set of rows rather than
-    overwriting the first, per the schema's `calibration_scores` versioning
+    overwriting the first, per the schema's `calibration_densities` versioning
     design (composite `(annotation_id, kde_model_id)` primary key).
     Re-running with the *same* `kde_model_id` (e.g. `annotate` reprocessing
     an unchanged, cache-hit batch) is idempotent -- it recomputes and
-    overwrites those rows' scores rather than raising a primary-key
+    overwrites those rows' values rather than raising a primary-key
     conflict.
 
     Raises:
-        KeyError: `kdes` has no KDE for an annotation's Ionization mode.
+        KeyError: `densities` has none for an annotation's Ionization mode.
         ValueError: `chunk_size` is below 1 and an annotation is targeted.
         sqlalchemy.exc.IntegrityError: `kde_model_id` doesn't reference an
             existing `kde_models` row.
     """
     targets = _annotation_targets(session, annotation_ids)
-    for annotation_id, score in _score_in_chunks(kdes, targets, chunk_size):
-        existing = session.get(CalibrationScore, (annotation_id, kde_model_id))
+    for annotation_id, log_correct, log_incorrect in _evaluate_in_chunks(
+        densities, targets, chunk_size
+    ):
+        existing = session.get(CalibrationDensities, (annotation_id, kde_model_id))
         if existing is not None:
-            existing.score = score
+            existing.log_correct_density = log_correct
+            existing.log_incorrect_density = log_incorrect
         else:
             session.add(
-                CalibrationScore(
+                CalibrationDensities(
                     annotation_id=annotation_id,
                     kde_model_id=kde_model_id,
-                    score=score,
+                    log_correct_density=log_correct,
+                    log_incorrect_density=log_incorrect,
                 )
             )
     session.commit()

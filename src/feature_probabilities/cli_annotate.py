@@ -16,11 +16,12 @@ surface:
   once, before any mzML reaches SIRIUS, and must hold a KDE for both
   Ionization modes (an older artifact fails, telling the operator to rerun
   ``fit-kde``). Every processed file's annotations (both freshly run and
-  cache-hit) are scored via ``calibrate.apply_calibration`` (#24) with the
-  KDE for the file's SIRIUS run's Ionization mode -- re-pointing
-  ``--kde-model`` at a different, already-fitted pickle for an
+  cache-hit) are calibrated via ``calibrate.apply_calibration`` (#24): the
+  correct and incorrect density for the file's SIRIUS run's Ionization mode
+  are evaluated per annotation and stored as natural-log densities --
+  re-pointing ``--kde-model`` at a different, already-fitted pickle for an
   already-processed batch adds a second, coexisting set of
-  ``calibration_scores`` rows without any new SIRIUS calls (a pure cache
+  ``calibration_densities`` rows without any new SIRIUS calls (a pure cache
   hit); re-running with the *same* model overwrites those rows in place
   (`apply_calibration`'s upsert semantics), keeping an unchanged rerun
   idempotent.
@@ -39,7 +40,8 @@ surface:
   `AnnotateSummary.failures` is non-empty.
 - ``--export <path>`` writes the batch's feature-probability table -- one
   row per feature-structure-candidate pair from every successfully
-  processed file, with its calibration score -- to CSV or Parquet
+  processed file, with its log correct density and log incorrect density, to
+  CSV or Parquet
   (selected by ``<path>``'s suffix): the literal deliverable GLOSSARY.md's
   Feature-probability table entry names.
 - SIRIUS is shut down after every mzML file (success or failure) and the
@@ -52,8 +54,8 @@ surface:
   (``sirius_protocol/STAR_Protocol_PySirius.md``, step 10).
 - Each analysed feature keeps only its ``config.sirius.top_k`` best-ranked
   structure candidates (GLOSSARY.md's Top-k), the same k
-  ``generate-groundtruth`` applies, so the calibration score is only
-  applied to the candidate population it was fitted on.
+  ``generate-groundtruth`` applies, so the densities are only
+  evaluated on the candidate population they were fitted on.
 - ``--smoke-test`` annotates into the config's ``[smoke_test]`` database,
   taking ``--mzml-dir``, ``--metadata-csv`` and ``--export`` from
   ``[smoke_test]`` unless passed explicitly (the two inputs are otherwise
@@ -114,7 +116,7 @@ from feature_probabilities.run_cache import (
 from feature_probabilities.schema import (
     SOURCE_KIND_FIELD_MZML,
     Annotation,
-    CalibrationScore,
+    CalibrationDensities,
     Extract,
     Feature,
     KdeModel,
@@ -159,7 +161,8 @@ _EXPORT_COLUMNS = (
     "csi_score",
     "rank",
     "adduct",
-    "calibration_score",
+    "log_correct_density",
+    "log_incorrect_density",
 )
 
 #: `--export` suffixes this CLI knows how to write, mapped to the
@@ -223,7 +226,7 @@ class AnnotateSummary:
     features_seen: int
     annotations_seen: int
     kde_model_id: int
-    calibration_scores_seen: int
+    calibration_results_seen: int
     failures: tuple[FileFailure, ...] = ()
 
 
@@ -286,8 +289,8 @@ def _export_rows(
 ) -> pd.DataFrame:
     """Every processed `run_ids` annotation, joined into one export row each.
 
-    Inner-joins `calibration_scores` on `kde_model_id`: every annotation
-    `annotate_batch` processes this run was just scored against exactly
+    Inner-joins `calibration_densities` on `kde_model_id`: every annotation
+    `annotate_batch` processes this run was just calibrated against exactly
     that model (`apply_calibration` covers the whole `result.annotations`
     set, cache hit or not), so no annotation is dropped by the join.
     """
@@ -307,16 +310,17 @@ def _export_rows(
             Annotation.csi_score,
             Annotation.rank,
             Annotation.adduct,
-            CalibrationScore.score,
+            CalibrationDensities.log_correct_density,
+            CalibrationDensities.log_incorrect_density,
         )
         .join(Feature, Annotation.feature_id == Feature.feature_id)
         .join(SiriusRun, Feature.run_id == SiriusRun.run_id)
         .join(Extract, SiriusRun.extract_id == Extract.extract_id)
         .join(Molecule, Annotation.molecule_id == Molecule.molecule_id)
         .join(
-            CalibrationScore,
-            (CalibrationScore.annotation_id == Annotation.annotation_id)
-            & (CalibrationScore.kde_model_id == kde_model_id),
+            CalibrationDensities,
+            (CalibrationDensities.annotation_id == Annotation.annotation_id)
+            & (CalibrationDensities.kde_model_id == kde_model_id),
         )
         .where(Feature.run_id.in_(run_ids))
         .order_by(Feature.feature_id, Annotation.annotation_id)
@@ -412,8 +416,6 @@ def annotate_batch(
             f"{exc} Rerun {fit_kde_command} to fit a correct and an "
             "incorrect density per Ionization mode."
         ) from exc
-    # Only the correct density is stored for now; exporting both is later work.
-    kdes = {mode: mode_densities.correct for mode, mode_densities in densities.items()}
     export_writer_name = (
         _export_writer_name(export_path) if export_path is not None else None
     )
@@ -427,7 +429,7 @@ def annotate_batch(
     cache_hits = 0
     features_seen = 0
     annotations_seen = 0
-    calibration_scores_seen = 0
+    calibration_results_seen = 0
     processed_run_ids: list[int] = []
     failures: list[FileFailure] = []
     for mzml_path in mzml_paths:
@@ -457,7 +459,7 @@ def annotate_batch(
             result = get_or_create_run(session, sirius, request, force=force)
             calibration_summary = apply_calibration(
                 session,
-                kdes,
+                densities,
                 kde_model.kde_model_id,
                 annotation_ids=[
                     annotation.annotation_id for annotation in result.annotations
@@ -475,7 +477,7 @@ def annotate_batch(
         cache_hits += 1 if result.from_cache else 0
         features_seen += len(result.features)
         annotations_seen += len(result.annotations)
-        calibration_scores_seen += calibration_summary.annotations_scored
+        calibration_results_seen += calibration_summary.annotations_scored
         processed_run_ids.append(result.run.run_id)
 
     if (
@@ -493,7 +495,7 @@ def annotate_batch(
         features_seen=features_seen,
         annotations_seen=annotations_seen,
         kde_model_id=kde_model.kde_model_id,
-        calibration_scores_seen=calibration_scores_seen,
+        calibration_results_seen=calibration_results_seen,
         failures=tuple(failures),
     )
 
@@ -505,8 +507,8 @@ def _format_summary(summary: AnnotateSummary) -> str:
             f"annotate: processed {summary.files_processed} mzML file(s) "
             f"({summary.cache_hits} cache hit(s), {newly_run} newly run), covering "
             f"{summary.features_seen} feature(s), {summary.annotations_seen} "
-            f"annotation(s), and {summary.calibration_scores_seen} calibration "
-            f"score(s) from kde_models row {summary.kde_model_id}."
+            f"annotation(s), and {summary.calibration_results_seen} calibration "
+            f"result(s) from kde_models row {summary.kde_model_id}."
         )
     ]
     if summary.failures:

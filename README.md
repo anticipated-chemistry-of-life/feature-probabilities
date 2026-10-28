@@ -100,12 +100,34 @@ seeded uniform subsample of at most 20,000 incorrect rows per mode (ADR
 on the `kde_models` row, with the rows each mode used. If either mode has no correct or no incorrect
 assignments, `fit-kde` fails and names that mode.
 
-`annotate` scores each field run's Features with the correct density for the
-Ionization mode recorded on that run. An artifact missing either density for
-either mode, such as an old one-KDE-per-mode artifact, is rejected before
-any mzML reaches SIRIUS; rerun `fit-kde`. A database from before this change
-needs its `kde_models` and `calibration_scores` tables dropped first (`kde_models` gains non-null
-columns and `calibration_scores` references it).
+`annotate` calibrates each field run's Features: for every (Feature, candidate)
+pair it stores the natural log of the correct density and of the incorrect
+density, both for the Ionization mode recorded on that run, in the
+`calibration_densities` table (one row per annotation and KDE model). Both
+Feature-probability table exports (`annotate --export` and
+`queries/feature_molecule_scores.sql`) carry them as `log_correct_density` and
+`log_incorrect_density`; the old `calibration_score` column is gone. The
+incorrect density (g0) is the one fitted on the seeded subsample above, so the
+difference of the two columns is a log likelihood ratio on the subsample's
+scale (ADR 0004). An artifact missing either density for either mode, such as
+an old one-KDE-per-mode artifact, is rejected before any mzML reaches SIRIUS;
+rerun `fit-kde`.
+
+### Migrating an existing database
+
+A database from before this change keeps all its SIRIUS results. Only two
+derived tables change: `kde_models` (gains non-null columns) and
+`calibration_scores` (now `calibration_densities`, referencing `kde_models`).
+Drop and recreate only those two, then refit and recalibrate:
+
+1. Drop the tables, referencing table first: `DROP TABLE calibration_scores;`
+   (and `DROP TABLE IF EXISTS calibration_densities;`), then
+   `DROP TABLE kde_models;`. Leave every other table alone.
+2. Run `fit-kde`. It recreates the dropped tables, empty, and fits a new KDE
+   model.
+3. Rerun `annotate` on the same batches. Every file is a SIRIUS cache hit, so
+   SIRIUS does not rerun; the annotations are recalibrated against the new
+   KDE model.
 
 ## Annotate
 

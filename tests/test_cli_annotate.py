@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import duckdb
 import numpy as np
 import pandas as pd
 import pytest
@@ -31,7 +32,7 @@ from feature_probabilities.kde import ModeDensities
 from feature_probabilities.schema import (
     SOURCE_KIND_FIELD_MZML,
     Annotation,
-    CalibrationScore,
+    CalibrationDensities,
     Extract,
     Feature,
     KdeModel,
@@ -74,7 +75,7 @@ _KDE_POINTS = [(150.0, -100.0), (151.0, -99.0), (149.5, -101.0), (152.0, -98.5)]
 
 #: A distinctly different point cloud, so a KDE fit on it disagrees with
 #: `_KDE_POINTS`'s -- lets tests tell "which model actually got applied"
-#: apart by the resulting `calibration_scores.score` alone.
+#: apart by the resulting `calibration_densities.log_correct_density` alone.
 _INCORRECT_KDE_POINTS = [
     (150.0, -300.0),
     (151.0, -310.0),
@@ -298,27 +299,37 @@ def test_one_batch_scores_each_files_features_with_its_own_modes_kde(
     assert result.exit_code == 0, result.output
     # `_fake_sirius_for`'s one Feature: ion mass 151.0, CSI:FingerID score -100.
     point = (151.0, -100.0)
-    expected = {mode: float(kde.pdf(point)[0]) for mode, kde in kdes.items()}
-    assert expected["positive"] != pytest.approx(expected["negative"])
+    incorrect = _fitted(_INCORRECT_KDE_POINTS)
+    expected_correct = {mode: float(kde.logpdf(point)[0]) for mode, kde in kdes.items()}
+    expected_incorrect = float(incorrect.logpdf(point)[0])
+    assert expected_correct["positive"] != pytest.approx(expected_correct["negative"])
     with _open_db(db_path) as session:
         scored = session.execute(
-            select(Extract.sample_id, SiriusRun.ionization_mode, CalibrationScore.score)
+            select(
+                Extract.sample_id,
+                SiriusRun.ionization_mode,
+                CalibrationDensities.log_correct_density,
+                CalibrationDensities.log_incorrect_density,
+            )
             .select_from(Extract)
             .join(SiriusRun, SiriusRun.extract_id == Extract.extract_id)
             .join(Feature, Feature.run_id == SiriusRun.run_id)
             .join(Annotation, Annotation.feature_id == Feature.feature_id)
             .join(
-                CalibrationScore,
-                CalibrationScore.annotation_id == Annotation.annotation_id,
+                CalibrationDensities,
+                CalibrationDensities.annotation_id == Annotation.annotation_id,
             )
             .order_by(Extract.sample_id)
         ).all()
-    assert [(sample_id, mode) for sample_id, mode, _ in scored] == [
+    assert [(sample_id, mode) for sample_id, mode, *_ in scored] == [
         ("EX-001", "positive"),
         ("EX-002", "negative"),
     ]
-    assert [score for *_, score in scored] == pytest.approx(
-        [expected["positive"], expected["negative"]]
+    assert [correct for _, _, correct, _ in scored] == pytest.approx(
+        [expected_correct["positive"], expected_correct["negative"]]
+    )
+    assert [incorrect for *_, incorrect in scored] == pytest.approx(
+        [expected_incorrect, expected_incorrect]
     )
 
 
@@ -537,8 +548,10 @@ def test_full_run_populates_expected_rows_through_the_fake_wrapper(
         assert len(session.scalars(select(Feature)).all()) == 1
         annotation = session.scalars(select(Annotation)).one()
 
-        score = session.get(CalibrationScore, (annotation.annotation_id, kde_model_id))
-        assert score is not None
+        densities = session.get(
+            CalibrationDensities, (annotation.annotation_id, kde_model_id)
+        )
+        assert densities is not None
 
 
 def test_second_run_with_unchanged_inputs_makes_zero_wrapper_calls(
@@ -573,7 +586,7 @@ def test_second_run_with_unchanged_inputs_makes_zero_wrapper_calls(
         # Re-scoring an unchanged, cache-hit batch against the same
         # kde_model_id updates the existing row in place rather than
         # raising a primary-key conflict.
-        assert len(session.scalars(select(CalibrationScore)).all()) == 1
+        assert len(session.scalars(select(CalibrationDensities)).all()) == 1
 
 
 def test_only_good_and_decent_features_are_analysed_and_persisted(
@@ -824,7 +837,7 @@ def test_omitting_kde_model_defaults_to_most_recently_fitted_row(
     assert result.exit_code == 0, result.output
     with _open_db(db_path) as session:
         annotation = session.scalars(select(Annotation)).one()
-        scores = session.scalars(select(CalibrationScore)).all()
+        scores = session.scalars(select(CalibrationDensities)).all()
         assert [row.kde_model_id for row in scores] == [kde_model_2_id]
         assert scores[0].annotation_id == annotation.annotation_id
 
@@ -851,7 +864,7 @@ def test_explicit_kde_model_flag_applies_that_pickle_instead_of_the_default(
 
     assert result.exit_code == 0, result.output
     with _open_db(db_path) as session:
-        scores = session.scalars(select(CalibrationScore)).all()
+        scores = session.scalars(select(CalibrationDensities)).all()
         assert [row.kde_model_id for row in scores] == [kde_model_1_id]
 
 
@@ -889,7 +902,7 @@ def test_repointing_kde_model_on_cached_batch_adds_scores_without_new_sirius_cal
         annotation = session.scalars(select(Annotation)).one()
         scores = {
             row.kde_model_id: row
-            for row in session.scalars(select(CalibrationScore)).all()
+            for row in session.scalars(select(CalibrationDensities)).all()
         }
         assert set(scores) == {kde_model_1_id, kde_model_2_id}
         assert all(
@@ -950,7 +963,7 @@ def test_one_file_failure_is_reported_others_succeed_and_exit_is_nonzero(
             select(Extract).where(Extract.sample_id == "EX-001")
         ).one()
         assert runs[0].extract_id == extract.extract_id
-        assert len(session.scalars(select(CalibrationScore)).all()) == 1
+        assert len(session.scalars(select(CalibrationDensities)).all()) == 1
 
 
 def test_every_file_runs_on_a_fresh_sirius_instance_even_after_a_failure(
@@ -1007,7 +1020,10 @@ def test_export_writes_one_csv_row_per_annotation(
     assert row["external_feature_id"] == "fake-feature-1"
     assert row["inchikey"] == "AAAAAAAAAAAAAA"
     assert row["csi_score"] == pytest.approx(-100.0)
-    assert np.isfinite(row["calibration_score"])
+    assert np.isfinite(row["log_correct_density"])
+    assert np.isfinite(row["log_incorrect_density"])
+    assert list(df.columns[-2:]) == ["log_correct_density", "log_incorrect_density"]
+    assert "calibration_score" not in df.columns
 
 
 def test_export_writes_parquet_when_given_a_parquet_extension(
@@ -1029,6 +1045,8 @@ def test_export_writes_parquet_when_given_a_parquet_extension(
     df = pd.read_parquet(export_path)
     assert len(df) == 1
     assert df.iloc[0]["sample_id"] == "EX-001"
+    assert list(df.columns[-2:]) == ["log_correct_density", "log_incorrect_density"]
+    assert np.isfinite(df.iloc[0]["log_correct_density"])
 
 
 def test_export_rejects_an_unsupported_file_extension(
@@ -1212,3 +1230,99 @@ def test_without_smoke_test_a_missing_input_flag_is_reported_before_the_config(
 
     assert result.exit_code == 2
     assert "--mzml-dir" in result.output
+
+
+def test_a_far_tail_annotation_stores_finite_log_densities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both densities underflow to 0.0 as plain pdfs here; their logs stay finite."""
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
+    csv_path = _write_csv(tmp_path)
+    _patch_seams(monkeypatch, fake=_fake_sirius_for())
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    far_correct = _fitted([(10.0, 500.0), (11.0, 501.0), (9.5, 499.0), (12.0, 502.0)])
+    far_incorrect = _fitted(
+        [(20.0, 900.0), (21.0, 901.0), (19.5, 899.0), (22.0, 902.0)]
+    )
+    assert far_correct.pdf((151.0, -100.0))[0] == 0.0
+    assert far_incorrect.pdf((151.0, -100.0))[0] == 0.0
+    densities = {
+        mode: ModeDensities(correct=far_correct, incorrect=far_incorrect)
+        for mode in ("positive", "negative")
+    }
+    _seed_kde_artifact(db_path, tmp_path / "kde.pkl", densities)
+
+    result = _invoke(config_path, mzml_dir, csv_path)
+
+    assert result.exit_code == 0, result.output
+    with _open_db(db_path) as session:
+        stored = session.scalars(select(CalibrationDensities)).one()
+    assert np.isfinite(stored.log_correct_density)
+    assert np.isfinite(stored.log_incorrect_density)
+    assert stored.log_correct_density == pytest.approx(
+        float(far_correct.logpdf((151.0, -100.0))[0])
+    )
+
+
+def test_the_run_summary_counts_calibration_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
+    csv_path = _write_csv(tmp_path)
+    _patch_seams(monkeypatch, fake=_fake_sirius_for())
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_kde_model(db_path, tmp_path / "kde.pkl")
+
+    result = _invoke(config_path, mzml_dir, csv_path)
+
+    assert result.exit_code == 0, result.output
+    assert "1 calibration result(s)" in result.output
+    assert "calibration score" not in result.output
+
+
+def _run_field_query(db_path: Path) -> pd.DataFrame:
+    """`queries/feature_molecule_scores.sql` run read-only against `db_path`."""
+    sql = (
+        Path(__file__).parents[1] / "queries" / "feature_molecule_scores.sql"
+    ).read_text()
+    connection = duckdb.connect(str(db_path), read_only=True)
+    try:
+        return connection.execute(sql).df()
+    finally:
+        connection.close()
+
+
+def test_the_field_run_query_returns_both_log_densities_of_the_latest_kde_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
+    csv_path = _write_csv(tmp_path)
+    _patch_seams(monkeypatch, fake=_fake_sirius_for())
+    db_path = tmp_path / "db" / "database.duckdb"
+    config_path = _write_config(tmp_path, db_path)
+    _seed_kde_model(db_path, tmp_path / "kde-v1.pkl", points=_OTHER_KDE_POINTS)
+    first = _invoke(config_path, mzml_dir, csv_path)
+    assert first.exit_code == 0, first.output
+
+    # Fitted but never applied: the latest model has scored nothing yet.
+    _seed_kde_model(db_path, tmp_path / "kde-v2.pkl")
+    unscored = _run_field_query(db_path)
+    assert len(unscored) == 1
+    assert unscored["log_correct_density"].isna().all()
+    assert unscored["log_incorrect_density"].isna().all()
+    assert "calibration_score" not in unscored.columns
+
+    second = _invoke(config_path, mzml_dir, csv_path)
+    assert second.exit_code == 0, second.output
+
+    scored = _run_field_query(db_path)
+    assert len(scored) == 1
+    point = (151.0, -100.0)
+    assert scored.iloc[0]["log_correct_density"] == pytest.approx(
+        float(_fitted(_KDE_POINTS).logpdf(point)[0])
+    )
+    assert scored.iloc[0]["log_incorrect_density"] == pytest.approx(
+        float(_fitted(_INCORRECT_KDE_POINTS).logpdf(point)[0])
+    )
