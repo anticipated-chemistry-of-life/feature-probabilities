@@ -69,7 +69,7 @@ an Instrument type through the shared `instrument` resolver. Both are
 recorded on the file's SIRIUS run, never on its Extract (GLOSSARY.md's
 Extract entry). The Instrument type selects the SIRIUS profile the file is
 analysed under (`instrument.analysis_params_for_instrument_type`); the
-Ionization mode selects the KDE that scores its Features. A missing or
+Ionization mode selects the correct and incorrect density that calibrate its Features. A missing or
 invalid value raises a `MetadataError` naming the file before that file
 reaches SIRIUS, aborting the run just as a missing metadata row does.
 """
@@ -376,8 +376,8 @@ def annotate_batch(
     `extract_id`, both acquisition values, `config.sirius.import_params`, and
     `config.sirius.analysis_params` under the Instrument type's SIRIUS
     profile (with `JobSubmission.recompute` also set from `force`), then
-    scores every one of its annotations (`apply_calibration`) with the
-    resolved model's KDE for that Ionization mode.
+    calibrates every one of its annotations (`apply_calibration`) with the
+    resolved model's correct and incorrect density for that Ionization mode.
 
     `commit`s `session` after every file -- on success, so an earlier
     file's work survives a later file's failure; on failure, `rollback`s
@@ -477,7 +477,7 @@ def annotate_batch(
         cache_hits += 1 if result.from_cache else 0
         features_seen += len(result.features)
         annotations_seen += len(result.annotations)
-        calibration_results_seen += calibration_summary.annotations_scored
+        calibration_results_seen += calibration_summary.annotations_calibrated
         processed_run_ids.append(result.run.run_id)
 
     if (

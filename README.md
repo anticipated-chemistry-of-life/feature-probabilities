@@ -144,7 +144,7 @@ polarities and instruments. Two columns are required:
   needs a line added there.
 
 Each field run records both values, is analysed under its Instrument type's
-SIRIUS profile, and is scored with the KDE for its Ionization mode. Neither
+SIRIUS profile, and is calibrated with the densities for its Ionization mode. Neither
 column is copied into the Extract's extra metadata. A missing column, a
 blank or invalid `ionization_mode`, or an `instrument_model` with no known
 Instrument type fails the run with an error naming the file, just like an

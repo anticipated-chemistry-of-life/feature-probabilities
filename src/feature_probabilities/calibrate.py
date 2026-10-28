@@ -76,16 +76,16 @@ class IncompleteKdeArtifactError(Exception):
 class CalibrationSummary:
     """A basic summary of what one `apply_calibration` call did."""
 
-    annotations_scored: int
+    annotations_calibrated: int
     kde_model_id: int
 
 
 @dataclass(frozen=True, slots=True)
-class AnnotationScoringTarget:
-    """One annotation to score: its id plus the `(ion_mass, csi_score)` pair.
+class CalibrationTarget:
+    """One annotation to calibrate: its id plus the `(ion_mass, csi_score)` pair.
 
     `ionization_mode` comes from the owning `sirius_runs` row and selects
-    the KDE that scores it.
+    the correct and incorrect density that are evaluated at the pair.
     """
 
     annotation_id: int
@@ -123,8 +123,8 @@ def load_kdes(artifact_path: str | Path) -> dict[str, ModeDensities]:
 
 def _annotation_targets(
     session: Session, annotation_ids: Sequence[int]
-) -> list[AnnotationScoringTarget]:
-    """Every `annotation_ids` row to score, joined with its feature's ion mass and Ionization mode.
+) -> list[CalibrationTarget]:
+    """Every `annotation_ids` row to calibrate, joined with its feature's ion mass and Ionization mode.
 
     Joins `annotations` -> `features` -> `sirius_runs` to pull in the
     feature's ion mass and owning run's Ionization mode.
@@ -141,7 +141,7 @@ def _annotation_targets(
         .where(Annotation.annotation_id.in_(annotation_ids))
     )
     return [
-        AnnotationScoringTarget(
+        CalibrationTarget(
             annotation_id=annotation_id,
             ion_mass=ion_mass,
             csi_score=csi_score,
@@ -155,7 +155,7 @@ def _annotation_targets(
 
 def _evaluate_in_chunks(
     densities: dict[str, ModeDensities],
-    targets: Sequence[AnnotationScoringTarget],
+    targets: Sequence[CalibrationTarget],
     chunk_size: int,
 ) -> Iterator[tuple[int, float, float]]:
     """Yield `(annotation_id, log_correct_density, log_incorrect_density)` per target.
@@ -168,7 +168,7 @@ def _evaluate_in_chunks(
     Raises:
         KeyError: `densities` has none for a target's Ionization mode.
     """
-    targets_by_mode: defaultdict[str, list[AnnotationScoringTarget]] = defaultdict(list)
+    targets_by_mode: defaultdict[str, list[CalibrationTarget]] = defaultdict(list)
     for target in targets:
         targets_by_mode[target.ionization_mode].append(target)
 
@@ -207,7 +207,7 @@ def apply_calibration(
     annotation. `chunk_size` only bounds each call; it never changes a stored
     value. Then upserts one `calibration_densities` row keyed
     `(annotation_id, kde_model_id)` per annotation: a fresh pair is inserted,
-    an already-scored pair has both log densities updated in place.
+    an already-calibrated pair has both log densities updated in place.
 
     Running this a second time with a *different* `kde_model_id` for the
     same annotations inserts a second, coexisting set of rows rather than
@@ -244,6 +244,6 @@ def apply_calibration(
     session.commit()
 
     return CalibrationSummary(
-        annotations_scored=len(targets),
+        annotations_calibrated=len(targets),
         kde_model_id=kde_model_id,
     )

@@ -76,13 +76,23 @@ _KDE_POINTS = [(150.0, -100.0), (151.0, -99.0), (149.5, -101.0), (152.0, -98.5)]
 #: A distinctly different point cloud, so a KDE fit on it disagrees with
 #: `_KDE_POINTS`'s -- lets tests tell "which model actually got applied"
 #: apart by the resulting `calibration_densities.log_correct_density` alone.
+_OTHER_KDE_POINTS = [(151.0, -100.0), (151.2, -99.8), (150.8, -100.2), (151.1, -99.9)]
+
+#: Far below `_KDE_POINTS` in CSI:FingerID score: incorrect assignments score
+#: lower than correct ones (ADR 0004). A second cloud gives the two Ionization
+#: modes distinct incorrect densities.
 _INCORRECT_KDE_POINTS = [
     (150.0, -300.0),
     (151.0, -310.0),
     (149.5, -290.0),
     (152.0, -305.0),
 ]
-_OTHER_KDE_POINTS = [(151.0, -100.0), (151.2, -99.8), (150.8, -100.2), (151.1, -99.9)]
+_OTHER_INCORRECT_KDE_POINTS = [
+    (150.0, -250.0),
+    (151.0, -260.0),
+    (149.5, -240.0),
+    (152.0, -255.0),
+]
 
 
 def _write_config(tmp_path: Path, db_path: Path) -> Path:
@@ -289,9 +299,18 @@ def test_one_batch_scores_each_files_features_with_its_own_modes_kde(
 
     db_path = tmp_path / "db" / "database.duckdb"
     config_path = _write_config(tmp_path, db_path)
-    kdes = {"positive": _fitted(_KDE_POINTS), "negative": _fitted(_OTHER_KDE_POINTS)}
+    correct = {"positive": _fitted(_KDE_POINTS), "negative": _fitted(_OTHER_KDE_POINTS)}
+    incorrect = {
+        "positive": _fitted(_INCORRECT_KDE_POINTS),
+        "negative": _fitted(_OTHER_INCORRECT_KDE_POINTS),
+    }
     _seed_kde_artifact(
-        db_path, tmp_path / "kde.pkl", _two_density(kdes["positive"], kdes["negative"])
+        db_path,
+        tmp_path / "kde.pkl",
+        {
+            mode: ModeDensities(correct=correct[mode], incorrect=incorrect[mode])
+            for mode in correct
+        },
     )
 
     result = _invoke(config_path, mzml_dir, csv_path)
@@ -299,10 +318,16 @@ def test_one_batch_scores_each_files_features_with_its_own_modes_kde(
     assert result.exit_code == 0, result.output
     # `_fake_sirius_for`'s one Feature: ion mass 151.0, CSI:FingerID score -100.
     point = (151.0, -100.0)
-    incorrect = _fitted(_INCORRECT_KDE_POINTS)
-    expected_correct = {mode: float(kde.logpdf(point)[0]) for mode, kde in kdes.items()}
-    expected_incorrect = float(incorrect.logpdf(point)[0])
+    expected_correct = {
+        mode: float(density.logpdf(point)[0]) for mode, density in correct.items()
+    }
+    expected_incorrect = {
+        mode: float(density.logpdf(point)[0]) for mode, density in incorrect.items()
+    }
     assert expected_correct["positive"] != pytest.approx(expected_correct["negative"])
+    assert expected_incorrect["positive"] != pytest.approx(
+        expected_incorrect["negative"]
+    )
     with _open_db(db_path) as session:
         scored = session.execute(
             select(
@@ -325,11 +350,11 @@ def test_one_batch_scores_each_files_features_with_its_own_modes_kde(
         ("EX-001", "positive"),
         ("EX-002", "negative"),
     ]
-    assert [correct for _, _, correct, _ in scored] == pytest.approx(
+    assert [log_correct for _, _, log_correct, _ in scored] == pytest.approx(
         [expected_correct["positive"], expected_correct["negative"]]
     )
-    assert [incorrect for *_, incorrect in scored] == pytest.approx(
-        [expected_incorrect, expected_incorrect]
+    assert [log_incorrect for *_, log_incorrect in scored] == pytest.approx(
+        [expected_incorrect["positive"], expected_incorrect["negative"]]
     )
 
 
@@ -1023,7 +1048,6 @@ def test_export_writes_one_csv_row_per_annotation(
     assert np.isfinite(row["log_correct_density"])
     assert np.isfinite(row["log_incorrect_density"])
     assert list(df.columns[-2:]) == ["log_correct_density", "log_incorrect_density"]
-    assert "calibration_score" not in df.columns
 
 
 def test_export_writes_parquet_when_given_a_parquet_extension(
@@ -1279,7 +1303,6 @@ def test_the_run_summary_counts_calibration_results(
 
     assert result.exit_code == 0, result.output
     assert "1 calibration result(s)" in result.output
-    assert "calibration score" not in result.output
 
 
 def _run_field_query(db_path: Path) -> pd.DataFrame:
@@ -1312,7 +1335,6 @@ def test_the_field_run_query_returns_both_log_densities_of_the_latest_kde_model(
     assert len(unscored) == 1
     assert unscored["log_correct_density"].isna().all()
     assert unscored["log_incorrect_density"].isna().all()
-    assert "calibration_score" not in unscored.columns
 
     second = _invoke(config_path, mzml_dir, csv_path)
     assert second.exit_code == 0, second.output

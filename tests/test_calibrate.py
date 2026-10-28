@@ -152,7 +152,7 @@ def test_mixed_mode_batch_larger_than_a_chunk_matches_per_row_evaluation() -> No
             chunk_size=3,
         )
 
-        assert summary.annotations_scored == len(batch)
+        assert summary.annotations_calibrated == len(batch)
         stored = {
             row.annotation_id: (row.log_correct_density, row.log_incorrect_density)
             for row in session.scalars(select(CalibrationDensities))
@@ -206,7 +206,7 @@ def test_only_requested_annotation_ids_are_scored_other_rows_untouched() -> None
             session, _densities(), kde_model.kde_model_id, annotation_ids=[included_id]
         )
 
-        assert summary.annotations_scored == 1
+        assert summary.annotations_calibrated == 1
         rows = session.scalars(select(CalibrationDensities)).all()
         assert [row.annotation_id for row in rows] == [included_id]
 
