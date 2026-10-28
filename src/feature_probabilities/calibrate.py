@@ -7,6 +7,11 @@ score -- `kdes[ionization_mode].pdf((ion_mass, csi_score))`, per the KDE
 calibration method decision (issue #7, ADR 0002) -- and upserts one
 `calibration_scores` row per `(annotation_id, kde_model_id)`.
 
+Issue #34: each Ionization mode's KDE is evaluated over that mode's
+annotations in chunks of at most `EVALUATION_CHUNK_SIZE`, one `kde.pdf` call
+per chunk -- never one call per annotation, since every call does work
+proportional to the KDE's training set before it evaluates a single point.
+
 KDE selection: the owning `sirius_runs` row's Ionization mode, with no
 fallback. :func:`load_kdes` refuses an artifact lacking either mode (e.g. an
 old instrument-keyed pickle), so every SIRIUS run's mode always has a KDE.
@@ -31,10 +36,13 @@ filesystem path (`kde_models.artifact_path`), never untrusted/network input.
 from __future__ import annotations
 
 import pickle
+from collections import defaultdict
 from dataclasses import dataclass
+from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -47,9 +55,15 @@ from feature_probabilities.schema import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
     from scipy.stats import gaussian_kde
+
+#: Most annotations one `kde.pdf` call evaluates. scipy whitens a KDE's whole
+#: training set on every call, so a call per annotation repeats that work for
+#: each of them; a chunk pays it once, while keeping the arrays a call holds
+#: a bounded size however large the batch.
+EVALUATION_CHUNK_SIZE = 10_000
 
 
 class IncompleteKdeArtifactError(Exception):
@@ -132,21 +146,54 @@ def _annotation_targets(
     ]
 
 
+def _score_in_chunks(
+    kdes: dict[str, gaussian_kde],
+    targets: Sequence[AnnotationScoringTarget],
+    chunk_size: int,
+) -> Iterator[tuple[int, float]]:
+    """Yield `(annotation_id, pdf)` for every target, one `kde.pdf` call per chunk.
+
+    Groups `targets` by Ionization mode, then evaluates that mode's KDE over
+    its group `chunk_size` points at a time.
+
+    Raises:
+        KeyError: `kdes` has no KDE for a target's Ionization mode.
+    """
+    targets_by_mode: defaultdict[str, list[AnnotationScoringTarget]] = defaultdict(list)
+    for target in targets:
+        targets_by_mode[target.ionization_mode].append(target)
+
+    for ionization_mode, mode_targets in targets_by_mode.items():
+        kde = kdes[ionization_mode]
+        for chunk in batched(mode_targets, chunk_size):
+            points = np.array(
+                [
+                    [target.ion_mass for target in chunk],
+                    [target.csi_score for target in chunk],
+                ]
+            )
+            for target, score in zip(chunk, kde.pdf(points), strict=True):
+                yield target.annotation_id, float(score)
+
+
 def apply_calibration(
     session: Session,
     kdes: dict[str, gaussian_kde],
     kde_model_id: int,
     *,
     annotation_ids: Sequence[int],
+    chunk_size: int = EVALUATION_CHUNK_SIZE,
 ) -> CalibrationSummary:
     """Score every `annotation_ids` row against `kdes` and persist+commit the result.
 
-    For each targeted annotation, computes
-    `kdes[ionization_mode].pdf((ion_mass, csi_score))` with its SIRIUS run's
-    Ionization mode -- there is no fallback KDE -- then upserts one
-    `calibration_scores` row keyed `(annotation_id, kde_model_id)`: a fresh
-    pair is inserted, an already-scored pair has its `score` updated in
-    place.
+    Groups the targeted annotations by their SIRIUS run's Ionization mode --
+    there is no fallback KDE -- and evaluates `kdes[ionization_mode].pdf` over
+    each group's `(ion_mass, csi_score)` points in one call per chunk of at
+    most `chunk_size` annotations, never one call per annotation.
+    `chunk_size` only bounds each call; it never changes a stored
+    score. Then upserts one `calibration_scores` row keyed
+    `(annotation_id, kde_model_id)` per annotation: a fresh pair is inserted,
+    an already-scored pair has its `score` updated in place.
 
     Running this a second time with a *different* `kde_model_id` for the
     same annotations inserts a second, coexisting set of rows rather than
@@ -159,20 +206,19 @@ def apply_calibration(
 
     Raises:
         KeyError: `kdes` has no KDE for an annotation's Ionization mode.
+        ValueError: `chunk_size` is below 1 and an annotation is targeted.
         sqlalchemy.exc.IntegrityError: `kde_model_id` doesn't reference an
             existing `kde_models` row.
     """
     targets = _annotation_targets(session, annotation_ids)
-    for target in targets:
-        kde = kdes[target.ionization_mode]
-        score = float(kde.pdf((target.ion_mass, target.csi_score))[0])
-        existing = session.get(CalibrationScore, (target.annotation_id, kde_model_id))
+    for annotation_id, score in _score_in_chunks(kdes, targets, chunk_size):
+        existing = session.get(CalibrationScore, (annotation_id, kde_model_id))
         if existing is not None:
             existing.score = score
         else:
             session.add(
                 CalibrationScore(
-                    annotation_id=target.annotation_id,
+                    annotation_id=annotation_id,
                     kde_model_id=kde_model_id,
                     score=score,
                 )

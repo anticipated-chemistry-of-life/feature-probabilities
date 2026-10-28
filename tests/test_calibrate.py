@@ -148,6 +148,66 @@ def test_each_annotation_is_scored_by_its_runs_ionization_mode_kde() -> None:
         )
 
 
+def test_mixed_mode_batch_larger_than_a_chunk_matches_per_row_evaluation() -> None:
+    """Issue #34: evaluating in chunks must not change any stored value.
+
+    The two Ionization modes alternate in annotation order. With chunks of 3,
+    the 7 positive annotations fill two chunks and leave a third holding one,
+    while the 6 negative ones fill exactly two: a chunk boundary falls inside
+    each mode's annotations, and the batch ends on a boundary for one mode
+    but not the other.
+    """
+    engine = create_database(":memory:")
+    with Session(engine) as session:
+        kdes = _kdes()
+        # Spread each annotation around its mode's cluster so every expected
+        # value differs: a result stored against the wrong annotation fails.
+        batch = [
+            (
+                "positive" if index % 2 == 0 else "negative",
+                (300.0 if index % 2 == 0 else 500.0) + 0.1 * index - 0.6,
+                (0.9 if index % 2 == 0 else 0.5) + 0.005 * index - 0.03,
+            )
+            for index in range(13)
+        ]
+        annotation_ids = [
+            _insert_annotation(
+                session,
+                ionization_mode=ionization_mode,
+                ion_mass=ion_mass,
+                csi_score=csi_score,
+                inchikey=f"{index:014d}",
+                run_suffix=f"batch-{index}",
+            )
+            for index, (ionization_mode, ion_mass, csi_score) in enumerate(batch)
+        ]
+        kde_model = KdeModel(artifact_path="/artifacts/kde-v1.pkl")
+        session.add(kde_model)
+        session.flush()
+
+        summary = apply_calibration(
+            session,
+            kdes,
+            kde_model.kde_model_id,
+            annotation_ids=annotation_ids,
+            chunk_size=3,
+        )
+
+        assert summary.annotations_scored == len(batch)
+        stored = {
+            row.annotation_id: row.score
+            for row in session.scalars(select(CalibrationScore))
+        }
+        assert set(stored) == set(annotation_ids)
+        for annotation_id, (ionization_mode, ion_mass, csi_score) in zip(
+            annotation_ids, batch, strict=True
+        ):
+            per_row_score = float(kdes[ionization_mode].pdf((ion_mass, csi_score))[0])
+            assert stored[annotation_id] == pytest.approx(
+                per_row_score, rel=1e-9, abs=0
+            )
+
+
 def test_second_kde_model_id_inserts_a_second_row_rather_than_overwriting() -> None:
     engine = create_database(":memory:")
     with Session(engine) as session:
