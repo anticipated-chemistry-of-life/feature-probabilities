@@ -8,6 +8,7 @@ from feature_probabilities.groundtruth import (
     CorrectAssignmentRow,
     GroundTruthAnnotationRow,
     correct_assignment_rows,
+    incorrect_assignment_rows,
     is_correct_assignment,
 )
 
@@ -217,3 +218,77 @@ def test_groundtruth_module_imports_no_duckdb_or_sirius() -> None:
     assert imported_roots.isdisjoint(
         {"duckdb", "sqlalchemy", "pysirius", "PySirius", "scipy"}
     )
+
+
+def test_incorrect_rows_flag_whether_the_features_truth_is_listed() -> None:
+    rows = [
+        # Feature 1: truth listed (rank 1), one incorrect candidate.
+        _row(
+            feature_id=1,
+            true_inchikey="TRUEAAAAAAAAAA",
+            candidate_inchikey="TRUEAAAAAAAAAA",
+        ),
+        _row(
+            feature_id=1,
+            true_inchikey="TRUEAAAAAAAAAA",
+            candidate_inchikey="WRONGAAAAAAAAA",
+            csi_score=-5.0,
+        ),
+        # Feature 2: truth ranked below Top-k, so only incorrect candidates.
+        _row(
+            feature_id=2,
+            true_inchikey="TRUEBBBBBBBBBB",
+            candidate_inchikey="WRONGBBBBBBBBB",
+            csi_score=-7.0,
+        ),
+    ]
+
+    result = incorrect_assignment_rows(rows)
+
+    assert [(r.feature_id, r.csi_score, r.truth_listed) for r in result] == [
+        (1, -5.0, True),
+        (2, -7.0, False),
+    ]
+
+
+def test_incorrect_rows_follow_the_dedup_and_prefer_the_listed_feature() -> None:
+    same = {"true_inchikey": "TRUEAAAAAAAAAA", "adduct": "[M+H]+"}
+    rows = [
+        # Feature 1 (lowest id) has no listed truth; feature 2 and 3 do.
+        _row(feature_id=1, candidate_inchikey="WRONG1AAAAAAAA", csi_score=-1.0, **same),
+        _row(feature_id=2, candidate_inchikey="TRUEAAAAAAAAAA", **same),
+        _row(feature_id=2, candidate_inchikey="WRONG2AAAAAAAA", csi_score=-2.0, **same),
+        _row(feature_id=3, candidate_inchikey="TRUEAAAAAAAAAA", **same),
+        _row(feature_id=3, candidate_inchikey="WRONG3AAAAAAAA", csi_score=-3.0, **same),
+        # Same truth under another adduct is its own Feature.
+        _row(
+            feature_id=4,
+            candidate_inchikey="WRONG4AAAAAAAA",
+            csi_score=-4.0,
+            true_inchikey="TRUEAAAAAAAAAA",
+            adduct="[M+Na]+",
+        ),
+    ]
+
+    result = incorrect_assignment_rows(rows)
+
+    # Feature 2 is the one correct_assignment_rows keeps for the key.
+    assert [r.feature_id for r in correct_assignment_rows(rows)] == [2]
+    assert [(r.feature_id, r.truth_listed) for r in result] == [(2, True), (4, False)]
+
+
+def test_incorrect_rows_are_independent_of_input_order() -> None:
+    rows = [
+        _row(
+            feature_id=i,
+            true_inchikey=f"TRUE{i:010d}",
+            candidate_inchikey=f"WRONG{j}{i:08d}",
+            csi_score=-float(j),
+        )
+        for i in range(1, 6)
+        for j in range(3)
+    ]
+    shuffled = rows[:]
+    random.Random(0).shuffle(shuffled)
+
+    assert incorrect_assignment_rows(shuffled) == incorrect_assignment_rows(rows)

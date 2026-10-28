@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from feature_probabilities.cli_annotate import main
+from feature_probabilities.kde import ModeDensities
 from feature_probabilities.schema import (
     SOURCE_KIND_FIELD_MZML,
     Annotation,
@@ -42,7 +43,7 @@ from feature_probabilities.sirius import FeatureStructureCandidate
 from feature_probabilities.sirius_fake import FakeSirius
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 CONFIG_TOML = """
 db_path = "{db_path}"
@@ -74,6 +75,12 @@ _KDE_POINTS = [(150.0, -100.0), (151.0, -99.0), (149.5, -101.0), (152.0, -98.5)]
 #: A distinctly different point cloud, so a KDE fit on it disagrees with
 #: `_KDE_POINTS`'s -- lets tests tell "which model actually got applied"
 #: apart by the resulting `calibration_scores.score` alone.
+_INCORRECT_KDE_POINTS = [
+    (150.0, -300.0),
+    (151.0, -310.0),
+    (149.5, -290.0),
+    (152.0, -305.0),
+]
 _OTHER_KDE_POINTS = [(151.0, -100.0), (151.2, -99.8), (150.8, -100.2), (151.1, -99.9)]
 
 
@@ -157,9 +164,18 @@ def _fitted(points: list[tuple[float, float]]) -> gaussian_kde:
     return gaussian_kde(np.array(points).T)
 
 
-def _seed_kde_artifact(
-    db_path: Path, artifact_path: Path, kdes: dict[str, gaussian_kde]
-) -> int:
+def _two_density(
+    positive: gaussian_kde, negative: gaussian_kde
+) -> dict[str, ModeDensities]:
+    """A two-density artifact whose correct densities are `positive`/`negative`."""
+    incorrect = _fitted(_INCORRECT_KDE_POINTS)
+    return {
+        "positive": ModeDensities(correct=positive, incorrect=incorrect),
+        "negative": ModeDensities(correct=negative, incorrect=incorrect),
+    }
+
+
+def _seed_kde_artifact(db_path: Path, artifact_path: Path, kdes: object) -> int:
     """Pickle `kdes` to `artifact_path` and insert its `kde_models` row.
 
     Creates `db_path` if it doesn't exist yet (mirroring `main`'s own
@@ -173,7 +189,11 @@ def _seed_kde_artifact(
     engine = create_database(str(db_path))
     try:
         with Session(engine) as session:
-            kde_model = KdeModel(artifact_path=str(artifact_path))
+            kde_model = KdeModel(
+                artifact_path=str(artifact_path),
+                subsample_seed=0,
+                incorrect_subsample_size=20_000,
+            )
             session.add(kde_model)
             session.commit()
             return kde_model.kde_model_id
@@ -187,11 +207,9 @@ def _seed_kde_model(
     *,
     points: list[tuple[float, float]] | None = None,
 ) -> int:
-    """`_seed_kde_artifact` with both Ionization modes' KDEs fitted on `points`."""
+    """`_seed_kde_artifact` with both modes' correct densities fitted on `points`."""
     fitted = _fitted(points if points is not None else _KDE_POINTS)
-    return _seed_kde_artifact(
-        db_path, artifact_path, {"positive": fitted, "negative": fitted}
-    )
+    return _seed_kde_artifact(db_path, artifact_path, _two_density(fitted, fitted))
 
 
 def _invoke(
@@ -269,7 +287,9 @@ def test_one_batch_scores_each_files_features_with_its_own_modes_kde(
     db_path = tmp_path / "db" / "database.duckdb"
     config_path = _write_config(tmp_path, db_path)
     kdes = {"positive": _fitted(_KDE_POINTS), "negative": _fitted(_OTHER_KDE_POINTS)}
-    _seed_kde_artifact(db_path, tmp_path / "kde.pkl", kdes)
+    _seed_kde_artifact(
+        db_path, tmp_path / "kde.pkl", _two_density(kdes["positive"], kdes["negative"])
+    )
 
     result = _invoke(config_path, mzml_dir, csv_path)
 
@@ -428,13 +448,39 @@ def test_acquisition_columns_are_not_copied_into_the_extracts_extra_metadata(
         assert extract.extra_metadata == {"collector": "field team A"}
 
 
+def _artifact_old_single_kde() -> dict[str, object]:
+    fitted = _fitted(_KDE_POINTS)
+    return {"positive": fitted, "negative": fitted}
+
+
+def _artifact_missing_incorrect_density() -> dict[str, object]:
+    full = _two_density(_fitted(_KDE_POINTS), _fitted(_KDE_POINTS))
+    return {"positive": full["positive"], "negative": _fitted(_KDE_POINTS)}
+
+
+def _artifact_missing_a_mode() -> dict[str, object]:
+    return {
+        "positive": _two_density(_fitted(_KDE_POINTS), _fitted(_KDE_POINTS))["positive"]
+    }
+
+
 @pytest.mark.parametrize(
-    "stale_keys",
-    [("Orbitrap", "QTOF", "__global__"), ("positive",)],
-    ids=["instrument-keyed", "missing-negative"],
+    "artifact",
+    [
+        _artifact_old_single_kde,
+        _artifact_missing_incorrect_density,
+        _artifact_missing_a_mode,
+        lambda: dict.fromkeys(("Orbitrap", "QTOF", "__global__"), _fitted(_KDE_POINTS)),
+    ],
+    ids=[
+        "old-single-kde",
+        "missing-incorrect-density",
+        "missing-negative",
+        "instrument-keyed",
+    ],
 )
-def test_a_kde_artifact_lacking_an_ionization_mode_fails_before_any_sirius_work(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale_keys: tuple[str, ...]
+def test_an_artifact_lacking_either_density_for_either_mode_fails_before_any_sirius_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact: Callable[[], object]
 ) -> None:
     mzml_dir = _write_mzml_dir(tmp_path, ["EX-001.mzML"])
     csv_path = _write_csv(tmp_path)
@@ -443,8 +489,7 @@ def test_a_kde_artifact_lacking_an_ionization_mode_fails_before_any_sirius_work(
 
     db_path = tmp_path / "db" / "database.duckdb"
     config_path = _write_config(tmp_path, db_path)
-    fitted = _fitted(_KDE_POINTS)
-    _seed_kde_artifact(db_path, tmp_path / "kde.pkl", dict.fromkeys(stale_keys, fitted))
+    _seed_kde_artifact(db_path, tmp_path / "kde.pkl", artifact())
 
     result = _invoke(config_path, mzml_dir, csv_path)
 

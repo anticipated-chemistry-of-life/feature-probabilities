@@ -4,15 +4,18 @@ Reads every ground-truth `features`/`annotations` row already in the DB
 (populated by `generate-groundtruth`, #20/#21 -- this executable never talks
 to SIRIUS or fetches the ground truth set itself), applies the
 correctness-matching-and-deduplication transform
-(`groundtruth.correct_assignment_rows`, #18), fits exactly one
-`scipy.stats.gaussian_kde` per Ionization mode -- `positive` and `negative`,
-each only on its own mode's correct assignments (`kde.fit_stratified_kdes`,
-ADR 0002) -- and persists both the pickle and its `kde_models` row.
+(`groundtruth.correct_assignment_rows`, #18) and
+`groundtruth.incorrect_assignment_rows` (ADR 0004), fits per Ionization mode
+-- `positive` and `negative`, each only on its own rows
+(`kde.fit_stratified_kdes`, ADR 0002) -- a correct density on the correct
+assignments and an incorrect density on a seeded subsample of the incorrect
+ones, and persists both the pickle and its `kde_models` row (recording the
+subsample seed and size).
 
 Exits non-zero with a clear message (rather than a raw fitting traceback) if
 there is no usable ground-truth data yet, telling the operator to run
-`generate-groundtruth` first, or if either Ionization mode has none, naming
-that mode.
+`generate-groundtruth` first, or if either Ionization mode has no correct
+or no incorrect assignments, naming that mode.
 """
 
 from __future__ import annotations
@@ -21,7 +24,6 @@ import pickle
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import click
 from sqlalchemy import select
@@ -37,8 +39,15 @@ from feature_probabilities.config import (
 from feature_probabilities.groundtruth import (
     GroundTruthAnnotationRow,
     correct_assignment_rows,
+    incorrect_assignment_rows,
 )
-from feature_probabilities.kde import EmptyStratumError, fit_stratified_kdes
+from feature_probabilities.kde import (
+    INCORRECT_SUBSAMPLE_SIZE,
+    SUBSAMPLE_SEED,
+    EmptyStratumError,
+    ModeDensities,
+    fit_stratified_kdes,
+)
 from feature_probabilities.schema import (
     SOURCE_KIND_GROUND_TRUTH_MSNLIB,
     Annotation,
@@ -48,9 +57,6 @@ from feature_probabilities.schema import (
     SiriusRun,
     create_database,
 )
-
-if TYPE_CHECKING:
-    from scipy.stats import gaussian_kde
 
 
 class NoGroundTruthDataError(Exception):
@@ -107,7 +113,7 @@ def _ground_truth_rows(session: Session) -> list[GroundTruthAnnotationRow]:
     ]
 
 
-def _pickle_kdes(kdes: dict[str, gaussian_kde], output_path: Path) -> None:
+def _pickle_kdes(kdes: dict[str, ModeDensities], output_path: Path) -> None:
     """Write `kdes` to `output_path` via `pickle`.
 
     Trust boundary: `pickle` is the only format that round-trips a fitted
@@ -129,9 +135,9 @@ def fit_kde(
     output_path: Path,
     groundtruth_command: str = "generate-groundtruth",
 ) -> FitKdeSummary:
-    """Fit one KDE per Ionization mode from `session`'s ground truth and persist it.
+    """Fit a correct and an incorrect density per Ionization mode and persist them.
 
-    Pickles the fitted `{"positive": kde, "negative": kde}` dict to
+    Pickles the fitted `{"positive": ModeDensities, "negative": ModeDensities}` dict to
     `output_path` and inserts+commits one `kde_models` row pointing at it.
     `groundtruth_command` is the command a no-data error tells the operator
     to run.
@@ -139,9 +145,9 @@ def fit_kde(
     Raises:
         NoGroundTruthDataError: there are zero correct-assignment rows to
             fit on -- `generate-groundtruth` hasn't produced usable data yet.
-        EmptyStratumError: propagated from `kde.fit_stratified_kdes` if one
-            Ionization mode has correct-assignment rows but the other has
-            none.
+        EmptyStratumError: propagated from `kde.fit_stratified_kdes` if an
+            Ionization mode has no correct-assignment rows or no
+            incorrect-assignment rows.
     """
     ground_truth_rows = _ground_truth_rows(session)
     correct_rows = correct_assignment_rows(ground_truth_rows)
@@ -151,10 +157,19 @@ def fit_kde(
             f"Run {groundtruth_command} first to populate ground-truth data."
         )
 
-    kdes = fit_stratified_kdes(correct_rows)
+    kdes = fit_stratified_kdes(
+        correct_rows,
+        incorrect_assignment_rows(ground_truth_rows),
+        seed=SUBSAMPLE_SEED,
+        subsample_size=INCORRECT_SUBSAMPLE_SIZE,
+    )
     _pickle_kdes(kdes, output_path)
 
-    kde_model = KdeModel(artifact_path=str(output_path))
+    kde_model = KdeModel(
+        artifact_path=str(output_path),
+        subsample_seed=SUBSAMPLE_SEED,
+        incorrect_subsample_size=INCORRECT_SUBSAMPLE_SIZE,
+    )
     session.add(kde_model)
     session.commit()
 

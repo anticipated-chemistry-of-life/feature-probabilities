@@ -46,7 +46,7 @@ import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from feature_probabilities.kde import IONIZATION_MODES
+from feature_probabilities.kde import IONIZATION_MODES, ModeDensities
 from feature_probabilities.schema import (
     Annotation,
     CalibrationScore,
@@ -67,7 +67,7 @@ EVALUATION_CHUNK_SIZE = 10_000
 
 
 class IncompleteKdeArtifactError(Exception):
-    """Raised when a KDE artifact lacks a KDE for one of `kde.IONIZATION_MODES`."""
+    """Raised when a KDE artifact lacks a correct or incorrect density for an Ionization mode."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,26 +92,31 @@ class AnnotationScoringTarget:
     ionization_mode: str
 
 
-def load_kdes(artifact_path: str | Path) -> dict[str, gaussian_kde]:
-    """Unpickle a `fit-kde` artifact back into its Ionization-mode-keyed KDE dict.
+def load_kdes(artifact_path: str | Path) -> dict[str, ModeDensities]:
+    """Unpickle a `fit-kde` artifact back into its Ionization-mode-keyed densities.
 
     Trust boundary: `artifact_path` is always a `kde_models.artifact_path`
     written by this same deployment's `fit-kde` (never untrusted/network
     input) -- see this module's docstring.
 
     Raises:
-        IncompleteKdeArtifactError: the artifact has no KDE for one of
-            `kde.IONIZATION_MODES`, e.g. it predates per-mode calibration.
+        IncompleteKdeArtifactError: the artifact has no pair of correct and
+            incorrect densities for one of `kde.IONIZATION_MODES`, e.g. it
+            is an old single-KDE-per-mode artifact.
     """
     with Path(artifact_path).open("rb") as handle:
-        kdes = pickle.load(handle)
-    missing_modes = [mode for mode in IONIZATION_MODES if mode not in kdes]
-    if missing_modes:
+        artifact = pickle.load(handle)
+    problems = [
+        f"{mode} (no correct and incorrect density)"
+        for mode in IONIZATION_MODES
+        if not isinstance(artifact.get(mode), ModeDensities)
+    ]
+    if problems:
         raise IncompleteKdeArtifactError(
-            f"KDE artifact {str(artifact_path)!r} has no KDE for Ionization "
-            f"mode(s) {', '.join(missing_modes)}."
+            f"KDE artifact {str(artifact_path)!r} is not a two-density artifact: "
+            f"Ionization mode(s) {', '.join(problems)}."
         )
-    return kdes
+    return artifact
 
 
 def _annotation_targets(

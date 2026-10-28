@@ -202,7 +202,13 @@ class Annotation(Base):
 
 
 class KdeModel(Base):
-    """One `fit-kde` run's pickled calibration model: a dict keyed by Ionization mode."""
+    """One `fit-kde` run's pickled calibration model.
+
+    The artifact is a dict keyed by Ionization mode, each holding a correct
+    and an incorrect density. `subsample_seed` and `incorrect_subsample_size`
+    record how the incorrect density's training rows were subsampled: the seed
+    and the per-mode cap (a mode with fewer incorrect rows used all of them).
+    """
 
     __tablename__ = "kde_models"
 
@@ -213,6 +219,8 @@ class KdeModel(Base):
         sa.DateTime, server_default=sa.func.now()
     )
     artifact_path: Mapped[str] = mapped_column(sa.String)
+    subsample_seed: Mapped[int] = mapped_column(sa.BigInteger)
+    incorrect_subsample_size: Mapped[int] = mapped_column(sa.Integer)
 
 
 class CalibrationScore(Base):

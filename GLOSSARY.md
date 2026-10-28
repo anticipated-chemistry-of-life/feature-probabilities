@@ -27,11 +27,11 @@ One execution of SIRIUS against one input spectra file (an mzML or an MGF chunk)
 _Avoid_: job (SIRIUS's own API term for the async task that executes a run — a run is the durable record, a job is how it got produced)
 
 **Top-k**:
-The maximum number of best-ranked (by CSI:FingerID score) structure candidates per Feature that a SIRIUS run retains; lower-ranked structure candidates never become Annotations. Part of a SIRIUS run's parameter set, so runs with different k are different SIRIUS runs. Applies to field runs and ground truth runs alike, so the calibration score is only ever fitted on and applied to the same candidate population. A ground truth Feature whose true structure ranks below k has no correct assignment.
+The maximum number of best-ranked (by CSI:FingerID score) structure candidates per Feature that a SIRIUS run retains; lower-ranked structure candidates never become Annotations. Part of a SIRIUS run's parameter set, so runs with different k are different SIRIUS runs. Applies to field runs and ground truth runs alike, so calibration is only ever fitted on and applied to the same candidate population. A ground truth Feature whose true structure ranks below k has no correct assignment.
 _Avoid_: candidate cap, candidate limit, max candidates
 
 **Ground truth set**:
-The `ALL_ENERGIES` spectra of MSnLib (each a merge of one compound's MS2 scans across all collision energies) at a pinned dataset revision, in both Ionization modes, all acquired on Orbitrap. Excludes spectra whose identity is ambiguous (matched to more than one library compound) and spectra whose adduct SIRIUS cannot detect. Each is given to SIRIUS with the measured MS1 scan around its precursor, from MSnLib's raw mzML files. Used to fit the calibration score's KDEs.
+The `ALL_ENERGIES` spectra of MSnLib (each a merge of one compound's MS2 scans across all collision energies) at a pinned dataset revision, in both Ionization modes, all acquired on Orbitrap. Excludes spectra whose identity is ambiguous (matched to more than one library compound) and spectra whose adduct SIRIUS cannot detect. Each is given to SIRIUS with the measured MS1 scan around its precursor, from MSnLib's raw mzML files. Used to fit the correct density and the incorrect density.
 _Avoid_: MassSpecGym (the former ground truth set)
 
 **Ionization mode**:
@@ -46,9 +46,28 @@ _Avoid_: instrument model (the specific product, e.g. "LC-MS QExactive Plus", wh
 A structure candidate whose InChIKey first block (skeleton/connectivity layer only) matches the ground truth set's known true structure for that spectrum. Stereochemistry and protonation state are ignored, since MS/MS routinely can't resolve them.
 _Avoid_: exact match, true positive (without qualifying "skeleton-level")
 
-**Calibration score**:
-The value returned for a feature–candidate pair's (ion mass, CSI:FingerID score) by the KDE fitted on the ground truth set's correct assignments in that pair's Ionization mode. One KDE per Ionization mode; instrument type does not split calibration. A density used to rank candidates within a feature, not a normalized posterior probability.
-_Avoid_: probability, confidence (both imply a calibrated posterior, which this isn't)
+**Incorrect assignment**:
+A ground truth Feature's structure candidate that is not its correct assignment: its InChIKey first block differs from the known true structure's. Includes every structure candidate of a ground truth Feature whose true structure ranks below Top-k.
+_Avoid_: decoy, false positive, wrong hit
+
+**Unknown molecule**:
+The explanation that a Feature's true identity is none of its structure candidates. A ground truth Feature has the unknown molecule as its truth exactly when it has no correct assignment.
+_Avoid_: none-of-the-above, decoy
+
+**Calibration**:
+The step that fits the correct density and the incorrect density on the ground truth set and evaluates both at every feature–candidate pair. Split by Ionization mode and by nothing else. Names the step, not a value.
+
+**Correct density**:
+The density of correct assignments over (ion mass, CSI:FingerID score) in the pair's Ionization mode, evaluated at a feature–candidate pair. Not a probability: its absolute scale is arbitrary, and only its ratio to the incorrect density carries meaning.
+_Avoid_: calibration score (former name), probability, confidence
+
+**Incorrect density**:
+The density of incorrect assignments over (ion mass, CSI:FingerID score) in the pair's Ionization mode, evaluated at a feature–candidate pair.
+_Avoid_: null density, background density, decoy density
+
+**Likelihood ratio**:
+A feature–candidate pair's correct density divided by its incorrect density. Within one Feature, each candidate's posterior weight is proportional to its prior times its likelihood ratio; on its own it is not a probability.
+_Avoid_: calibration score, relative score
 
 **Feature-probability table**:
-`annotate`'s final exported table (one row per feature–structure-candidate pair with its calibration score) — the deliverable the whole pipeline produces for a batch of new mzML files.
+`annotate`'s final exported table (one row per feature–structure-candidate pair with its correct density and incorrect density) — the deliverable the whole pipeline produces for a batch of new mzML files.

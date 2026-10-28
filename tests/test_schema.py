@@ -109,7 +109,11 @@ def _insert_full_graph(session: Session) -> dict[str, int]:
     session.add(annotation)
     session.flush()
 
-    kde_model = KdeModel(artifact_path="/artifacts/kde-v1.pkl")
+    kde_model = KdeModel(
+        artifact_path="/artifacts/kde-v1.pkl",
+        subsample_seed=0,
+        incorrect_subsample_size=20_000,
+    )
     session.add(kde_model)
     session.flush()
 
@@ -346,7 +350,11 @@ def test_two_calibration_scores_for_the_same_annotation_with_different_kde_model
         ids = _insert_full_graph(session)
         session.commit()
 
-        second_kde_model = KdeModel(artifact_path="/artifacts/kde-v2.pkl")
+        second_kde_model = KdeModel(
+            artifact_path="/artifacts/kde-v2.pkl",
+            subsample_seed=0,
+            incorrect_subsample_size=20_000,
+        )
         session.add(second_kde_model)
         session.flush()
         session.add(

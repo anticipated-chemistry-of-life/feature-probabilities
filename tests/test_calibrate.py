@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from feature_probabilities.calibrate import apply_calibration, load_kdes
+from feature_probabilities.kde import ModeDensities
 from feature_probabilities.schema import (
     Annotation,
     CalibrationScore,
@@ -113,7 +114,11 @@ def test_each_annotation_is_scored_by_its_runs_ionization_mode_kde() -> None:
             inchikey="BBBBBBBBBBBBBB",
             run_suffix="negative",
         )
-        kde_model = KdeModel(artifact_path="/artifacts/kde-v1.pkl")
+        kde_model = KdeModel(
+            artifact_path="/artifacts/kde-v1.pkl",
+            subsample_seed=0,
+            incorrect_subsample_size=20_000,
+        )
         session.add(kde_model)
         session.flush()
 
@@ -181,7 +186,11 @@ def test_mixed_mode_batch_larger_than_a_chunk_matches_per_row_evaluation() -> No
             )
             for index, (ionization_mode, ion_mass, csi_score) in enumerate(batch)
         ]
-        kde_model = KdeModel(artifact_path="/artifacts/kde-v1.pkl")
+        kde_model = KdeModel(
+            artifact_path="/artifacts/kde-v1.pkl",
+            subsample_seed=0,
+            incorrect_subsample_size=20_000,
+        )
         session.add(kde_model)
         session.flush()
 
@@ -220,7 +229,11 @@ def test_second_kde_model_id_inserts_a_second_row_rather_than_overwriting() -> N
             inchikey="DDDDDDDDDDDDDD",
             run_suffix="orb",
         )
-        kde_model_1 = KdeModel(artifact_path="/artifacts/kde-v1.pkl")
+        kde_model_1 = KdeModel(
+            artifact_path="/artifacts/kde-v1.pkl",
+            subsample_seed=0,
+            incorrect_subsample_size=20_000,
+        )
         session.add(kde_model_1)
         session.flush()
         apply_calibration(
@@ -233,7 +246,11 @@ def test_second_kde_model_id_inserts_a_second_row_rather_than_overwriting() -> N
             "positive": _kde([(310.0, 0.6), (311.0, 0.62), (309.5, 0.58)]),
             "negative": _kde([(500.0, 0.5), (501.0, 0.55), (499.0, 0.52)]),
         }
-        kde_model_2 = KdeModel(artifact_path="/artifacts/kde-v2.pkl")
+        kde_model_2 = KdeModel(
+            artifact_path="/artifacts/kde-v2.pkl",
+            subsample_seed=0,
+            incorrect_subsample_size=20_000,
+        )
         session.add(kde_model_2)
         session.flush()
         apply_calibration(
@@ -283,7 +300,11 @@ def test_same_kde_model_id_updates_the_existing_row_in_place() -> None:
             inchikey="GGGGGGGGGGGGGG",
             run_suffix="orb",
         )
-        kde_model = KdeModel(artifact_path="/artifacts/kde-v1.pkl")
+        kde_model = KdeModel(
+            artifact_path="/artifacts/kde-v1.pkl",
+            subsample_seed=0,
+            incorrect_subsample_size=20_000,
+        )
         session.add(kde_model)
         session.flush()
         apply_calibration(
@@ -337,7 +358,11 @@ def test_only_requested_annotation_ids_are_scored_other_rows_untouched() -> None
             inchikey="FFFFFFFFFFFFFF",
             run_suffix="excluded",
         )
-        kde_model = KdeModel(artifact_path="/artifacts/kde-v1.pkl")
+        kde_model = KdeModel(
+            artifact_path="/artifacts/kde-v1.pkl",
+            subsample_seed=0,
+            incorrect_subsample_size=20_000,
+        )
         session.add(kde_model)
         session.flush()
 
@@ -350,15 +375,18 @@ def test_only_requested_annotation_ids_are_scored_other_rows_untouched() -> None
         assert [row.annotation_id for row in rows] == [included_id]
 
 
-def test_load_kdes_round_trips_a_pickled_artifact(tmp_path: Path) -> None:
+def test_load_kdes_round_trips_a_pickled_two_density_artifact(tmp_path: Path) -> None:
     kdes = _kdes()
+    artifact = {
+        mode: ModeDensities(correct=kde, incorrect=kde) for mode, kde in kdes.items()
+    }
     artifact_path = tmp_path / "kde.pkl"
     with artifact_path.open("wb") as handle:
-        pickle.dump(kdes, handle)
+        pickle.dump(artifact, handle)
 
     loaded = load_kdes(artifact_path)
 
     assert set(loaded) == set(kdes)
-    for mode, kde in kdes.items():
-        assert isinstance(loaded[mode], gaussian_kde)
-        assert loaded[mode].pdf((300.0, 0.9)) == pytest.approx(kde.pdf((300.0, 0.9)))
+    for mode_densities in loaded.values():
+        assert isinstance(mode_densities.correct, gaussian_kde)
+        assert isinstance(mode_densities.incorrect, gaussian_kde)

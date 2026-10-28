@@ -67,6 +67,24 @@ class CorrectAssignmentRow:
     csi_score: float
 
 
+@dataclass(frozen=True, slots=True)
+class IncorrectAssignmentRow:
+    """One incorrect-assignment row the incorrect density's fit consumes.
+
+    `truth_listed` is whether the row's Feature has a correct assignment
+    among its candidates (listed truth) or its true structure ranked below
+    Top-k, so no candidate matches it (unlisted truth).
+    """
+
+    feature_id: int
+    true_inchikey: str
+    adduct: str
+    ionization_mode: str
+    ion_mass: float
+    csi_score: float
+    truth_listed: bool
+
+
 def is_correct_assignment(row: GroundTruthAnnotationRow) -> bool:
     """Whether `row`'s candidate InChIKey matches its ground truth's `true_inchikey`.
 
@@ -110,3 +128,48 @@ def correct_assignment_rows(
         if key not in kept_by_key:
             kept_by_key[key] = row
     return [_to_correct_assignment_row(row) for row in kept_by_key.values()]
+
+
+def incorrect_assignment_rows(
+    rows: Iterable[GroundTruthAnnotationRow],
+) -> list[IncorrectAssignmentRow]:
+    """Every incorrect assignment of the Features the `(true_inchikey, adduct)` dedup keeps.
+
+    A Feature's key is `(true_inchikey, adduct)`. Per key, the Feature kept is
+    the one :func:`correct_assignment_rows` keeps (lowest `feature_id` with a
+    correct assignment); a key with no correct assignment anywhere keeps its
+    lowest `feature_id`. So g1's rows are unchanged, and a Feature whose truth
+    ranked below Top-k still contributes its incorrect rows. All of a kept
+    Feature's incorrect assignments are returned, sorted by
+    `(feature_id, candidate_inchikey)` so refitting is reproducible whatever
+    `rows`' input order. A Feature's adduct is its candidates' adduct (SIRIUS
+    detects one per Feature).
+    """
+    ordered = sorted(rows, key=lambda row: (row.feature_id, row.candidate_inchikey))
+    features: dict[int, list[GroundTruthAnnotationRow]] = {}
+    for row in ordered:
+        features.setdefault(row.feature_id, []).append(row)
+
+    kept_by_key: dict[tuple[str, str], tuple[int, bool]] = {}
+    for feature_id, feature_rows in features.items():
+        first = feature_rows[0]
+        key = (first.true_inchikey, first.adduct)
+        listed = any(is_correct_assignment(row) for row in feature_rows)
+        kept = kept_by_key.get(key)
+        if kept is None or (listed and not kept[1]):
+            kept_by_key[key] = (feature_id, listed)
+
+    kept_features = dict(kept_by_key.values())
+    return [
+        IncorrectAssignmentRow(
+            feature_id=row.feature_id,
+            true_inchikey=row.true_inchikey,
+            adduct=row.adduct,
+            ionization_mode=row.ionization_mode,
+            ion_mass=row.ion_mass,
+            csi_score=row.csi_score,
+            truth_listed=kept_features[row.feature_id],
+        )
+        for row in ordered
+        if row.feature_id in kept_features and not is_correct_assignment(row)
+    ]

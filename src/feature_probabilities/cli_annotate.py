@@ -406,11 +406,14 @@ def annotate_batch(
         session, kde_model_path, fit_kde_command=fit_kde_command
     )
     try:
-        kdes = load_kdes(kde_model.artifact_path)
+        densities = load_kdes(kde_model.artifact_path)
     except IncompleteKdeArtifactError as exc:
         raise NoKdeModelError(
-            f"{exc} Rerun {fit_kde_command} to fit one KDE per Ionization mode."
+            f"{exc} Rerun {fit_kde_command} to fit a correct and an "
+            "incorrect density per Ionization mode."
         ) from exc
+    # Only the correct density is stored for now; exporting both is later work.
+    kdes = {mode: mode_densities.correct for mode, mode_densities in densities.items()}
     export_writer_name = (
         _export_writer_name(export_path) if export_path is not None else None
     )
