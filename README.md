@@ -97,15 +97,15 @@ truth ranked below Top-k. Instrument type does not split calibration, and
 there is no fallback KDE (ADR 0002). The incorrect density is fitted on a
 seeded uniform subsample of at most 20,000 incorrect rows per mode (ADR
 0004); the correct density is never subsampled. The seed and size are stored
-on the `kde_models` row. If either mode has no correct or no incorrect
+on the `kde_models` row, with the rows each mode used. If either mode has no correct or no incorrect
 assignments, `fit-kde` fails and names that mode.
 
 `annotate` scores each field run's Features with the correct density for the
 Ionization mode recorded on that run. An artifact missing either density for
 either mode, such as an old one-KDE-per-mode artifact, is rejected before
 any mzML reaches SIRIUS; rerun `fit-kde`. A database from before this change
-needs its `kde_models` and `calibration_scores` tables dropped first (they
-gain non-null columns).
+needs its `kde_models` and `calibration_scores` tables dropped first (`kde_models` gains non-null
+columns and `calibration_scores` references it).
 
 ## Annotate
 

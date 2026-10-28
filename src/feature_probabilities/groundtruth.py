@@ -4,7 +4,7 @@ Turns the ground-truth-run `features`/`annotations`/`molecules` rows #19
 persists into the deduplicated set of correct-assignment rows `fit-kde`
 (#22) fits its KDEs on. Deliberately does **not** read the DuckDB schema, run
 `scipy.stats.gaussian_kde`, or split rows by Ionization mode -- it only
-answers two questions, per the KDE calibration method decision (issue #7,
+answers the following, per the KDE calibration method decision (issue #7,
 amended by #9's InChIKey/SMILES correction and ADR 0002):
 
 - :func:`is_correct_assignment` -- does a candidate's InChIKey match the
@@ -19,6 +19,9 @@ amended by #9's InChIKey/SMILES correction and ADR 0002):
   KDE's density estimate and refitting on unchanged data is byte-for-byte
   reproducible. `adduct` is the one SIRIUS detected, so it already implies
   the Ionization mode.
+- :func:`incorrect_assignment_rows` -- every incorrect assignment of the
+  Features that dedup keeps, including Features whose truth ranked below
+  Top-k (ADR 0004).
 
 Callers (#22) are responsible for joining `features`/`annotations`/
 `molecules`/`sirius_runs` into :class:`GroundTruthAnnotationRow` and for

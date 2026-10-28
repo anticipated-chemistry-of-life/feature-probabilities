@@ -814,4 +814,6 @@ def test_oversized_incorrect_set_is_subsampled_deterministically_and_recorded(
         for row in session.scalars(select(KdeModel)):
             assert row.subsample_seed is not None
             assert row.incorrect_subsample_size == 20_000
+            assert row.positive_incorrect_rows_used == 20_000
+            assert row.negative_incorrect_rows_used == 3
     engine.dispose()

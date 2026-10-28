@@ -193,6 +193,8 @@ def _seed_kde_artifact(db_path: Path, artifact_path: Path, kdes: object) -> int:
                 artifact_path=str(artifact_path),
                 subsample_seed=0,
                 incorrect_subsample_size=20_000,
+                positive_incorrect_rows_used=4,
+                negative_incorrect_rows_used=4,
             )
             session.add(kde_model)
             session.commit()

@@ -113,6 +113,8 @@ def _insert_full_graph(session: Session) -> dict[str, int]:
         artifact_path="/artifacts/kde-v1.pkl",
         subsample_seed=0,
         incorrect_subsample_size=20_000,
+        positive_incorrect_rows_used=1,
+        negative_incorrect_rows_used=1,
     )
     session.add(kde_model)
     session.flush()
@@ -354,6 +356,8 @@ def test_two_calibration_scores_for_the_same_annotation_with_different_kde_model
             artifact_path="/artifacts/kde-v2.pkl",
             subsample_seed=0,
             incorrect_subsample_size=20_000,
+            positive_incorrect_rows_used=1,
+            negative_incorrect_rows_used=1,
         )
         session.add(second_kde_model)
         session.flush()

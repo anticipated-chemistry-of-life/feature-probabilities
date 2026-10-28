@@ -169,6 +169,8 @@ def fit_kde(
         artifact_path=str(output_path),
         subsample_seed=SUBSAMPLE_SEED,
         incorrect_subsample_size=INCORRECT_SUBSAMPLE_SIZE,
+        positive_incorrect_rows_used=kdes["positive"].incorrect.n,
+        negative_incorrect_rows_used=kdes["negative"].incorrect.n,
     )
     session.add(kde_model)
     session.commit()

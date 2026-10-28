@@ -207,7 +207,9 @@ class KdeModel(Base):
     The artifact is a dict keyed by Ionization mode, each holding a correct
     and an incorrect density. `subsample_seed` and `incorrect_subsample_size`
     record how the incorrect density's training rows were subsampled: the seed
-    and the per-mode cap (a mode with fewer incorrect rows used all of them).
+    and the per-mode cap. `*_incorrect_rows_used` is the number of rows each
+    mode's incorrect density was actually fitted on (the cap, or all of the
+    mode's incorrect rows when there were fewer).
     """
 
     __tablename__ = "kde_models"
@@ -221,6 +223,8 @@ class KdeModel(Base):
     artifact_path: Mapped[str] = mapped_column(sa.String)
     subsample_seed: Mapped[int] = mapped_column(sa.BigInteger)
     incorrect_subsample_size: Mapped[int] = mapped_column(sa.Integer)
+    positive_incorrect_rows_used: Mapped[int] = mapped_column(sa.Integer)
+    negative_incorrect_rows_used: Mapped[int] = mapped_column(sa.Integer)
 
 
 class CalibrationScore(Base):

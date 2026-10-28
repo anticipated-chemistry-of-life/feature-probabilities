@@ -118,6 +118,8 @@ def test_each_annotation_is_scored_by_its_runs_ionization_mode_kde() -> None:
             artifact_path="/artifacts/kde-v1.pkl",
             subsample_seed=0,
             incorrect_subsample_size=20_000,
+            positive_incorrect_rows_used=1,
+            negative_incorrect_rows_used=1,
         )
         session.add(kde_model)
         session.flush()
@@ -190,6 +192,8 @@ def test_mixed_mode_batch_larger_than_a_chunk_matches_per_row_evaluation() -> No
             artifact_path="/artifacts/kde-v1.pkl",
             subsample_seed=0,
             incorrect_subsample_size=20_000,
+            positive_incorrect_rows_used=1,
+            negative_incorrect_rows_used=1,
         )
         session.add(kde_model)
         session.flush()
@@ -233,6 +237,8 @@ def test_second_kde_model_id_inserts_a_second_row_rather_than_overwriting() -> N
             artifact_path="/artifacts/kde-v1.pkl",
             subsample_seed=0,
             incorrect_subsample_size=20_000,
+            positive_incorrect_rows_used=1,
+            negative_incorrect_rows_used=1,
         )
         session.add(kde_model_1)
         session.flush()
@@ -250,6 +256,8 @@ def test_second_kde_model_id_inserts_a_second_row_rather_than_overwriting() -> N
             artifact_path="/artifacts/kde-v2.pkl",
             subsample_seed=0,
             incorrect_subsample_size=20_000,
+            positive_incorrect_rows_used=1,
+            negative_incorrect_rows_used=1,
         )
         session.add(kde_model_2)
         session.flush()
@@ -304,6 +312,8 @@ def test_same_kde_model_id_updates_the_existing_row_in_place() -> None:
             artifact_path="/artifacts/kde-v1.pkl",
             subsample_seed=0,
             incorrect_subsample_size=20_000,
+            positive_incorrect_rows_used=1,
+            negative_incorrect_rows_used=1,
         )
         session.add(kde_model)
         session.flush()
@@ -362,6 +372,8 @@ def test_only_requested_annotation_ids_are_scored_other_rows_untouched() -> None
             artifact_path="/artifacts/kde-v1.pkl",
             subsample_seed=0,
             incorrect_subsample_size=20_000,
+            positive_incorrect_rows_used=1,
+            negative_incorrect_rows_used=1,
         )
         session.add(kde_model)
         session.flush()
