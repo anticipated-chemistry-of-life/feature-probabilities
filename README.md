@@ -100,6 +100,13 @@ seeded uniform subsample of at most 20,000 incorrect rows per mode (ADR
 on the `kde_models` row, with the rows each mode used. If either mode has no correct or no incorrect
 assignments, `fit-kde` fails and names that mode.
 
+The summary also compares, per Ionization mode, incorrect rows of Features
+whose truth is listed with those whose truth is unlisted: row count, CSI score
+median and q10/q90, and the mean and q10/q90 of ln g0_listed − ln g0_unlisted
+at the pooled g0's training subsample. It is diagnostic only: the artifact and
+`kde_models` row stay pooled, and an empty subpopulation is reported, not an
+error.
+
 `annotate` calibrates each field run's Features: for every (Feature, candidate)
 pair it stores the natural log of the correct density and of the incorrect
 density, both for the Ionization mode recorded on that run, in the

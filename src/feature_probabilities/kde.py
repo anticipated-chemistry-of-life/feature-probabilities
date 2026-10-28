@@ -121,3 +121,86 @@ def fit_stratified_kdes(
             incorrect=_fit_one(_subsample(mode_incorrect, subsample_size, seed)),
         )
     return densities
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreSummary:
+    """Count and CSI:FingerID score quantiles of one subpopulation's incorrect rows."""
+
+    rows: int
+    median: float
+    q10: float
+    q90: float
+
+
+@dataclass(frozen=True, slots=True)
+class LogDensityDifference:
+    """Mean and q10/q90 of ln g0_listed - ln g0_unlisted over a set of points."""
+
+    mean: float
+    q10: float
+    q90: float
+
+
+@dataclass(frozen=True, slots=True)
+class ModeDiagnostic:
+    """Listed-vs-unlisted truth comparison of one Ionization mode's incorrect rows.
+
+    A summary is `None` when its subpopulation has no incorrect rows.
+    `difference` is `None` when either subpopulation has no rows or its g0
+    cannot be fitted (too few or collinear rows).
+    """
+
+    listed: ScoreSummary | None
+    unlisted: ScoreSummary | None
+    difference: LogDensityDifference | None
+
+
+def _score_summary(rows: Sequence[IncorrectAssignmentRow]) -> ScoreSummary | None:
+    if not rows:
+        return None
+    scores = np.array([row.csi_score for row in rows])
+    q10, median, q90 = np.quantile(scores, [0.1, 0.5, 0.9])
+    return ScoreSummary(
+        rows=len(rows), median=float(median), q10=float(q10), q90=float(q90)
+    )
+
+
+def incorrect_density_diagnostic(
+    incorrect_rows: Sequence[IncorrectAssignmentRow],
+    pooled: dict[str, ModeDensities],
+    *,
+    seed: int = SUBSAMPLE_SEED,
+    subsample_size: int = INCORRECT_SUBSAMPLE_SIZE,
+) -> dict[str, ModeDiagnostic]:
+    """Compare incorrect rows of listed-truth and unlisted-truth Features per mode.
+
+    Reports each subpopulation's score quantiles, and fits g0 on each (same
+    subsample cap and seed rule as the pooled g0) to compare them at the
+    pooled g0's training subsample. Read-only: `pooled` is not modified.
+    """
+    diagnostics: dict[str, ModeDiagnostic] = {}
+    for ionization_mode in IONIZATION_MODES:
+        mode_rows = [r for r in incorrect_rows if r.ionization_mode == ionization_mode]
+        listed = [r for r in mode_rows if r.truth_listed]
+        unlisted = [r for r in mode_rows if not r.truth_listed]
+        difference = None
+        if listed and unlisted:
+            try:
+                g0_listed = _fit_one(_subsample(listed, subsample_size, seed))
+                g0_unlisted = _fit_one(_subsample(unlisted, subsample_size, seed))
+            except (ValueError, np.linalg.LinAlgError):
+                pass
+            else:
+                points = pooled[ionization_mode].incorrect.dataset
+                delta = g0_listed.logpdf(points) - g0_unlisted.logpdf(points)
+                q10, q90 = np.quantile(delta, [0.1, 0.9])
+                difference = LogDensityDifference(
+                    mean=float(delta.mean()), q10=float(q10), q90=float(q90)
+                )
+        diagnostics[ionization_mode] = ModeDiagnostic(
+            listed=_score_summary(listed),
+            unlisted=_score_summary(unlisted),
+            difference=difference,
+        )
+    return diagnostics

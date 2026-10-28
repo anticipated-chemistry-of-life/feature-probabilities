@@ -817,3 +817,106 @@ def test_oversized_incorrect_set_is_subsampled_deterministically_and_recorded(
             assert row.positive_incorrect_rows_used == 20_000
             assert row.negative_incorrect_rows_used == 3
     engine.dispose()
+
+
+#: Incorrect candidates of Features whose truth is unlisted (no correct
+#: assignment among their candidates): clearly higher scores than the listed
+#: ones in `_INCORRECT_POINTS_BY_MODE`.
+_UNLISTED_POINTS = [(205.0, 1.1), (215.0, 1.5), (240.0, 1.3), (260.0, 1.9)]
+
+
+def _seed_unlisted_positive(session: Session) -> None:
+    run = _insert_run(session, ionization_mode="positive", run_suffix="unlisted")
+    for i, (ion_mass, csi_score) in enumerate(_UNLISTED_POINTS):
+        feature = _insert_feature(
+            session,
+            run=run,
+            feature_suffix=f"unlisted-{i}",
+            true_inchikey=_inchikey("positive", 100 + i),
+            ion_mass=ion_mass,
+            adduct="[M+H]+",
+        )
+        _insert_incorrect_candidate(
+            session,
+            feature=feature,
+            candidate_inchikey=_decoy_inchikey("positive", 100 + i),
+            csi_score=csi_score,
+            adduct="[M+H]+",
+        )
+
+
+def _diagnostic_lines(output: str, mode: str) -> list[str]:
+    """The indented lines under `mode`'s incorrect-density diagnostic heading."""
+    lines = output.splitlines()
+    start = lines.index(f"Incorrect-density diagnostic ({mode}):")
+    block = []
+    for line in lines[start + 1 :]:
+        if not line.startswith("  "):
+            break
+        block.append(line.strip())
+    return block
+
+
+def test_summary_compares_listed_and_unlisted_truth_incorrect_rows(
+    tmp_path: Path,
+) -> None:
+    def seed(session: Session) -> None:
+        _seed_both_modes(session)
+        _seed_unlisted_positive(session)
+
+    result, _ = _fit_from(tmp_path, seed)
+
+    assert result.exit_code == 0, result.output
+    listed, unlisted, difference = _diagnostic_lines(result.output, "positive")
+    assert listed == (
+        "listed truth: 3 incorrect rows, CSI score median -0.200, q10 -0.360, q90 0.040"
+    )
+    assert unlisted == (
+        "unlisted truth: 4 incorrect rows, CSI score median 1.400, q10 1.160, q90 1.780"
+    )
+    # Pooled g0's subsample holds both groups' rows: g0_listed wins on the
+    # listed rows and g0_unlisted on the unlisted ones.
+    assert difference.startswith("ln g0_listed - ln g0_unlisted: mean ")
+    q10 = float(difference.split("q10 ")[1].split(",")[0])
+    q90 = float(difference.split("q90 ")[1])
+    assert q10 < 0 < q90
+
+
+def test_an_empty_subpopulation_is_reported_for_its_mode_and_the_fit_succeeds(
+    tmp_path: Path,
+) -> None:
+    def seed(session: Session) -> None:
+        _seed_both_modes(session)
+        _seed_unlisted_positive(session)
+
+    result, output_path = _fit_from(tmp_path, seed)
+
+    assert result.exit_code == 0, result.output
+    listed, unlisted, difference = _diagnostic_lines(result.output, "negative")
+    assert listed.startswith("listed truth: 3 incorrect rows")
+    assert unlisted == "unlisted truth: no incorrect rows"
+    assert difference == "ln g0_listed - ln g0_unlisted: not computed"
+    assert output_path.exists()
+
+
+def test_the_diagnostic_leaves_the_artifact_and_model_record_pooled(
+    tmp_path: Path,
+) -> None:
+    def seed(session: Session) -> None:
+        _seed_both_modes(session)
+        _seed_unlisted_positive(session)
+
+    result, output_path = _fit_from(tmp_path, seed)
+
+    assert result.exit_code == 0, result.output
+    densities = load_kdes(output_path)
+    assert _fitted_points(densities["positive"].incorrect) == {
+        *_INCORRECT_POINTS_BY_MODE["positive"],
+        *_UNLISTED_POINTS,
+    }
+    engine = create_database(tmp_path / "database.duckdb")
+    with Session(engine) as session:
+        row = session.scalars(select(KdeModel)).one()
+        assert row.positive_incorrect_rows_used == 7
+        assert row.negative_incorrect_rows_used == 3
+    engine.dispose()

@@ -46,7 +46,10 @@ from feature_probabilities.kde import (
     SUBSAMPLE_SEED,
     EmptyStratumError,
     ModeDensities,
+    ModeDiagnostic,
+    ScoreSummary,
     fit_stratified_kdes,
+    incorrect_density_diagnostic,
 )
 from feature_probabilities.schema import (
     SOURCE_KIND_GROUND_TRUTH_MSNLIB,
@@ -81,6 +84,7 @@ class FitKdeSummary:
     strata_fitted: tuple[str, ...]
     artifact_path: Path
     kde_model_id: int
+    diagnostics: dict[str, ModeDiagnostic]
 
 
 def _ground_truth_rows(session: Session) -> list[GroundTruthAnnotationRow]:
@@ -157,9 +161,10 @@ def fit_kde(
             f"Run {groundtruth_command} first to populate ground-truth data."
         )
 
+    incorrect_rows = incorrect_assignment_rows(ground_truth_rows)
     kdes = fit_stratified_kdes(
         correct_rows,
-        incorrect_assignment_rows(ground_truth_rows),
+        incorrect_rows,
         seed=SUBSAMPLE_SEED,
         subsample_size=INCORRECT_SUBSAMPLE_SIZE,
     )
@@ -181,19 +186,47 @@ def fit_kde(
         strata_fitted=tuple(sorted(kdes)),
         artifact_path=output_path,
         kde_model_id=kde_model.kde_model_id,
+        diagnostics=incorrect_density_diagnostic(incorrect_rows, kdes),
     )
+
+
+def _format_score_summary(label: str, summary: ScoreSummary | None) -> str:
+    if summary is None:
+        return f"  {label} truth: no incorrect rows"
+    return (
+        f"  {label} truth: {summary.rows} incorrect rows, CSI score median "
+        f"{summary.median:.3f}, q10 {summary.q10:.3f}, q90 {summary.q90:.3f}"
+    )
+
+
+def _format_diagnostic(mode: str, diagnostic: ModeDiagnostic) -> list[str]:
+    lines = [
+        f"Incorrect-density diagnostic ({mode}):",
+        _format_score_summary("listed", diagnostic.listed),
+        _format_score_summary("unlisted", diagnostic.unlisted),
+    ]
+    difference = diagnostic.difference
+    if difference is None:
+        lines.append("  ln g0_listed - ln g0_unlisted: not computed")
+    else:
+        lines.append(
+            f"  ln g0_listed - ln g0_unlisted: mean {difference.mean:.3f}, "
+            f"q10 {difference.q10:.3f}, q90 {difference.q90:.3f}"
+        )
+    return lines
 
 
 def _format_summary(summary: FitKdeSummary) -> str:
-    return "\n".join(
-        [
-            f"Ground-truth rows seen: {summary.ground_truth_rows_seen}",
-            f"Correct-assignment rows used: {summary.correct_assignment_rows_used}",
-            f"Strata fitted: {', '.join(summary.strata_fitted)}",
-            f"Artifact written to: {summary.artifact_path}",
-            f"kde_models row: {summary.kde_model_id}",
-        ]
-    )
+    lines = [
+        f"Ground-truth rows seen: {summary.ground_truth_rows_seen}",
+        f"Correct-assignment rows used: {summary.correct_assignment_rows_used}",
+        f"Strata fitted: {', '.join(summary.strata_fitted)}",
+        f"Artifact written to: {summary.artifact_path}",
+        f"kde_models row: {summary.kde_model_id}",
+    ]
+    for mode, diagnostic in summary.diagnostics.items():
+        lines.extend(_format_diagnostic(mode, diagnostic))
+    return "\n".join(lines)
 
 
 def _default_output_path(config: Config) -> Path:
