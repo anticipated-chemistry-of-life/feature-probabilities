@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from feature_probabilities.calibration_eval import (
     CalibrationReport,
     MethodReport,
-    TooFewStructuresError,
+    TooFewMoleculesError,
     eval_features,
     evaluate_calibration,
 )
@@ -43,7 +43,7 @@ _CLICK_EXCEPTION_ERRORS = (
     ConfigError,
     EmptyStratumError,
     NoGroundTruthDataError,
-    TooFewStructuresError,
+    TooFewMoleculesError,
 )
 
 _NO_GROUND_TRUTH = (

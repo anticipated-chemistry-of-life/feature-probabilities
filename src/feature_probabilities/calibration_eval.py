@@ -53,7 +53,7 @@ FOLDS = 5
 RELIABILITY_BINS = 10
 
 
-class TooFewStructuresError(Exception):
+class TooFewMoleculesError(Exception):
     """Raised when there are fewer distinct true InChIKeys than folds."""
 
 
@@ -144,7 +144,7 @@ def _assign_folds(features: Sequence[EvalFeature], seed: int) -> dict[str, int]:
     """Fold of every distinct true InChIKey: a seeded shuffle of the sorted keys, dealt round-robin."""
     keys = sorted({feature.true_inchikey for feature in features})
     if len(keys) < FOLDS:
-        raise TooFewStructuresError(
+        raise TooFewMoleculesError(
             f"Need at least {FOLDS} distinct true InChIKeys to cross-validate in "
             f"{FOLDS} folds, found {len(keys)}."
         )
@@ -221,7 +221,7 @@ def _score(
     return _Scored(log_correct, log_incorrect, correct, starts)
 
 
-def _top_n_hits(scored: _Scored, log_weight: NDArray[np.float64]) -> list[int]:
+def _truth_ranks(scored: _Scored, log_weight: NDArray[np.float64]) -> list[int]:
     """Truth rank (1-based) of every Feature with a correct assignment.
 
     Candidates rank by weight, best first; equal weights keep their input
@@ -327,7 +327,7 @@ class _Pool:
     losses: list[NDArray[np.float64]] = field(default_factory=list)
 
     def add_fold(self, scored_test: _Scored, test: _Weights, ln_c: float) -> None:
-        self.ranks += _top_n_hits(scored_test, test.log_weight)
+        self.ranks += _truth_ranks(scored_test, test.log_weight)
         self.fitted_c.append(float(np.exp(ln_c)))
         self.posteriors.append(test.candidate_posteriors(ln_c))
         self.correct.append(scored_test.correct)
@@ -382,7 +382,7 @@ def evaluate_calibration(
     give an identical report.
 
     Raises:
-        TooFewStructuresError: fewer distinct true InChIKeys than folds.
+        TooFewMoleculesError: fewer distinct true InChIKeys than folds.
         kde.EmptyStratumError: a fold's training Features leave an Ionization
             mode without correct or without incorrect candidates.
     """

@@ -39,10 +39,11 @@ def _feature(
 
 
 def _tilted_incorrect_features(n_per_mode: int = 60) -> list[EvalFeature]:
-    """Correct scores are broad around 0; incorrect ones sit in a narrow band at its centre.
+    """Correct scores are broad around 0; incorrect ones sit in a narrow band at higher scores.
 
-    The correct density peaks where the incorrect candidates are, so the
-    best-row baseline prefers them, while the likelihood ratio does not.
+    The correct density is broad, so a correct candidate with a high score
+    has a low density and loses to incorrect ones on the best-row baseline;
+    the likelihood ratio sees that the incorrect density is lower still.
     """
     rng = np.random.default_rng(1)
     features = []
@@ -54,7 +55,7 @@ def _tilted_incorrect_features(n_per_mode: int = 60) -> list[EvalFeature]:
                     index=i,
                     ionization_mode=mode,
                     correct_scores=[float(rng.normal(0.0, 1.0))],
-                    incorrect_scores=[float(s) for s in rng.normal(0.0, 0.2, size=3)],
+                    incorrect_scores=[float(s) for s in rng.normal(1.0, 0.3, size=3)],
                 )
             )
     return features
@@ -84,7 +85,7 @@ def _features_with_unlisted_share(
                     index=i,
                     ionization_mode=mode,
                     correct_scores=[] if unlisted else [float(rng.normal(0.0, 1.0))],
-                    incorrect_scores=[float(s) for s in rng.normal(0.0, 0.2, size=3)],
+                    incorrect_scores=[float(s) for s in rng.normal(1.0, 0.3, size=3)],
                 )
             )
     return features
