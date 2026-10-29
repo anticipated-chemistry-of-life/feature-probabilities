@@ -150,7 +150,7 @@ pooled over the held-out folds, gives:
   correct assignment;
 - the held-out mean log-loss, and each fold's fitted c.
 
-The same data and seed give an identical report. Fewer than 5 distinct true
+A progress bar over the scored candidate rows goes to stderr, so stdout stays the report. The same data and seed give an identical report. Fewer than 5 distinct true
 InChIKeys, or a training split left without an Ionization mode's correct or
 incorrect candidates, fails the run.
 

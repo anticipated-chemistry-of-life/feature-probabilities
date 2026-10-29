@@ -42,7 +42,7 @@ from feature_probabilities.groundtruth import (
 from feature_probabilities.kde import ModeDensities, fit_stratified_kdes
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
     from numpy.typing import NDArray
 
@@ -188,7 +188,9 @@ def _fit(training: Sequence[EvalFeature], seed: int) -> dict[str, ModeDensities]
 
 
 def _score(
-    features: Sequence[EvalFeature], densities: dict[str, ModeDensities]
+    features: Sequence[EvalFeature],
+    densities: dict[str, ModeDensities],
+    progress: Callable[[int], None] | None = None,
 ) -> _Scored:
     """Evaluate both densities at every candidate of `features`, chunk by chunk per mode.
 
@@ -218,6 +220,8 @@ def _score(
             points = np.vstack([ion_mass[index], csi_score[index]])
             log_correct[index] = densities[ionization_mode].correct.logpdf(points)
             log_incorrect[index] = densities[ionization_mode].incorrect.logpdf(points)
+            if progress is not None:
+                progress(len(index))
     return _Scored(log_correct, log_incorrect, correct, starts)
 
 
@@ -374,12 +378,17 @@ class _Pool:
 
 
 def evaluate_calibration(
-    features: Sequence[EvalFeature], *, seed: int
+    features: Sequence[EvalFeature],
+    *,
+    seed: int,
+    progress: Callable[[int], None] | None = None,
 ) -> CalibrationReport:
     """Cross-validate the baseline and the likelihood ratio on `features`.
 
     Features without candidates are excluded. The same `features` and `seed`
-    give an identical report.
+    give an identical report. `progress`, if given, is called with the number
+    of candidate rows each density evaluation just scored; every fold scores
+    every candidate once, so the run totals `FOLDS * candidates` rows.
 
     Raises:
         TooFewMoleculesError: fewer distinct true InChIKeys than folds.
@@ -394,8 +403,8 @@ def evaluate_calibration(
         training = [f for f in kept if fold_of[f.true_inchikey] != fold]
         test = [f for f in kept if fold_of[f.true_inchikey] == fold]
         densities = _fit(training, seed)
-        scored_training = _score(training, densities)
-        scored_test = _score(test, densities)
+        scored_training = _score(training, densities, progress)
+        scored_test = _score(test, densities, progress)
         for name, log_weight_of in _LOG_WEIGHTS.items():
             ln_c = _fit_ln_c(_weights(scored_training, log_weight_of(scored_training)))
             pools[name].add_fold(

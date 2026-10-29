@@ -17,8 +17,10 @@ from pathlib import Path
 import click
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
+from tqdm import tqdm
 
 from feature_probabilities.calibration_eval import (
+    FOLDS,
     CalibrationReport,
     MethodReport,
     TooFewMoleculesError,
@@ -176,7 +178,9 @@ def main(config_path: Path | None, db_path: str | None, seed: int) -> None:
         features = eval_features(_read_ground_truth(config.db_path))
         if not features:
             raise NoGroundTruthDataError(_NO_GROUND_TRUTH)
-        report = evaluate_calibration(features, seed=seed)
+        total_rows = FOLDS * sum(len(f.candidates) for f in features)
+        with tqdm(total=total_rows, unit="row", desc="Scoring candidates") as bar:
+            report = evaluate_calibration(features, seed=seed, progress=bar.update)
     except _CLICK_EXCEPTION_ERRORS as exc:
         raise click.ClickException(str(exc)) from exc
 
