@@ -120,6 +120,40 @@ scale (ADR 0004). An artifact missing either density for either mode, such as
 an old one-KDE-per-mode artifact, is rejected before any mzML reaches SIRIUS;
 rerun `fit-kde`.
 
+### Evaluating the weighting
+
+`evaluate-calibration` cross-validates two ways of weighting a Feature's
+candidates on the Ground truth set: the **baseline**, correct density over the
+Feature's best row (what the MRF uses today), and the **likelihood ratio**,
+correct density over incorrect density. It takes `--config`, `--db` and
+`--seed` (default 0), reads the same Features as `fit-kde` and prints both
+methods side by side. It writes nothing: no artifact, no `kde_models` row, no
+file. With no ground truth in the DB it fails and points at
+`generate-groundtruth`.
+
+Each distinct true InChIKey goes to exactly one of 5 folds by a seeded
+shuffle. In every fold both densities are refitted on the training Features
+with the function `fit-kde` uses, so the incorrect density is subsampled from
+training rows only. Weights are w_j = g1_j / max_k g1_k (baseline) or
+w_j = g1_j / g0_j (likelihood ratio), with a uniform prior over candidates; a
+candidate's posterior is w_j / (Σw + c) and the Unknown molecule's is
+c / (Σw + c). Per method and fold, c is fitted on the training Features by a
+bounded 1-D search over ln c minimising the mean −ln posterior of the truth
+(the Unknown molecule for a Feature without a correct assignment). The report,
+pooled over the held-out folds, gives:
+
+- top-1 and top-5 accuracy over Features with a correct assignment, ranking
+  candidates only, ties broken by input order;
+- a 10-bin equal-width reliability table over all held-out candidate rows:
+  count, mean posterior, fraction correct;
+- the mean and median Unknown-molecule posterior over Features without a
+  correct assignment;
+- the held-out mean log-loss, and each fold's fitted c.
+
+The same data and seed give an identical report. Fewer than 5 distinct true
+InChIKeys, or a training split left without an Ionization mode's correct or
+incorrect candidates, fails the run.
+
 ### Migrating an existing database
 
 A database from before this change keeps all its SIRIUS results. Only two

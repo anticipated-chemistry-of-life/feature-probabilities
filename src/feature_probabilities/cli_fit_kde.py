@@ -87,7 +87,7 @@ class FitKdeSummary:
     diagnostics: dict[str, ModeDiagnostic]
 
 
-def _ground_truth_rows(session: Session) -> list[GroundTruthAnnotationRow]:
+def read_ground_truth_rows(session: Session) -> list[GroundTruthAnnotationRow]:
     """Every ground-truth-run feature-structure-candidate pair, joined and flattened.
 
     Restricted to `sirius_runs.source_kind == 'ground_truth_msnlib'` rows
@@ -153,7 +153,7 @@ def fit_kde(
             Ionization mode has no correct-assignment rows or no
             incorrect-assignment rows.
     """
-    ground_truth_rows = _ground_truth_rows(session)
+    ground_truth_rows = read_ground_truth_rows(session)
     correct_rows = correct_assignment_rows(ground_truth_rows)
     if not correct_rows:
         raise NoGroundTruthDataError(

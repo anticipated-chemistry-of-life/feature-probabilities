@@ -29,6 +29,7 @@ dependencies = [
 [project.scripts]
 generate-groundtruth = "feature_probabilities.cli_generate_groundtruth:main"
 fit-kde = "feature_probabilities.cli_fit_kde:main"
+evaluate-calibration = "feature_probabilities.cli_evaluate_calibration:main"
 annotate = "feature_probabilities.cli_annotate:main"
 
 [dependency-groups]
